@@ -29,7 +29,6 @@ export function useLabels() {
   return {
     material: (id: string) => find(meta.materials, id),
     route: (id: string) => find(meta.routes, id),
-    counterfactual: (id: string) => find(meta.counterfactuals, id),
     outcome: (id: string) => find(meta.outcomes, id),
   };
 }
@@ -40,9 +39,10 @@ export const roleLabels: Record<string, string> = {
   recycler: "Recycler",
 };
 
-// kg formats a weight, switching to tonnes from 1000 kg.
+// kg formats a weight, switching to tonnes from 10,000 kg so smaller
+// totals keep their precision.
 export function kg(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} t`;
+  if (n >= 10000) return `${(n / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} t`;
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 1 })} kg`;
 }
 
@@ -51,10 +51,16 @@ export function pcs(n: number): string {
   return `${n.toLocaleString()} ${n === 1 ? "piece" : "pieces"}`;
 }
 
-// amount describes how much a listing offers: counted items lead with the
-// count, and the weight follows as an estimate.
+// amount describes how much a listing offers, in its own unit.
 export function amount(l: { pieces: number; estKg: number }): string {
-  return l.pieces > 0 ? `${pcs(l.pieces)} · about ${kg(l.estKg)}` : kg(l.estKg);
+  return l.pieces > 0 ? pcs(l.pieces) : `about ${kg(l.estKg)}`;
+}
+
+// handed describes an Amount (what was given or claimed): "45 kg and 10
+// pieces", "10 pieces", or "nothing yet".
+export function handed(a: { kg: number; pieces: number }): string {
+  const parts = [a.kg > 0 && kg(a.kg), a.pieces > 0 && pcs(a.pieces)].filter(Boolean);
+  return parts.length ? parts.join(" and ") : "nothing yet";
 }
 
 // needAmount describes how much a need asks for, or "any amount".

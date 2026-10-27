@@ -55,15 +55,13 @@ export default function ActivityView({ version, onChanged }: Props) {
 }
 
 // TransferCard shows one hand-over, its progress, and the next action.
-// Collecting records the weight and what would have happened otherwise,
-// which is what decides whether the weight counts as diverted.
+// Collecting records how much changed hands, in the listing's own unit.
 function TransferCard({ t, onChanged }: { t: Transfer; onChanged: (m: string) => void }) {
   const meta = useMeta();
   const labels = useLabels();
   const [form, setForm] = useState<"" | "collect" | "outcome">("");
   const [weight, setWeight] = useState("");
   const [pieces, setPieces] = useState("");
-  const [cf, setCf] = useState("");
   const [outcome, setOutcome] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
@@ -83,11 +81,8 @@ function TransferCard({ t, onChanged }: { t: Transfer; onChanged: (m: string) =>
     }
   }
 
-  // Counted listings ask for pieces; the weight is then optional and falls
-  // back to the listing's estimate per piece.
+  // Counted listings ask for pieces, bulk listings for kg.
   const counted = t.listingPieces > 0;
-  const perPiece = counted ? Math.round((t.listingEstKg / t.listingPieces) * 10) / 10 : 0;
-  const diverted = meta.counterfactuals.find((c) => c.id === t.counterfactual)?.diverted;
 
   return (
     <li className={`card transfer status-${t.status}`}>
@@ -113,13 +108,7 @@ function TransferCard({ t, onChanged }: { t: Transfer; onChanged: (m: string) =>
 
       {(t.status === "collected" || t.status === "completed") && (
         <p className="ledger">
-          {t.confirmedPieces > 0 ? (
-            <><span className="num">{pcs(t.confirmedPieces)}</span>, {t.kgEstimated ? "about " : ""}<span className="num">{kg(t.confirmedKg)}</span>{t.kgEstimated ? " (estimated)" : " weighed"}.</>
-          ) : (
-            <><span className="num">{kg(t.confirmedKg)}</span> weighed.</>
-          )}{" "}Otherwise it would have been{" "}
-          <em>{labels.counterfactual(t.counterfactual).toLowerCase()}</em>, so it{" "}
-          {diverted ? <strong className="good">counts as diverted</strong> : <strong className="muted">doesn't count as diverted</strong>}.
+          Handed over: <span className="num">{counted ? pcs(t.confirmedPieces) : kg(t.confirmedKg)}</span>.
           {t.status === "completed" && <> Outcome: {labels.outcome(t.outcome).toLowerCase()}{t.outcomeNote && ` (${t.outcomeNote})`}.</>}
         </p>
       )}
@@ -156,32 +145,24 @@ function TransferCard({ t, onChanged }: { t: Transfer; onChanged: (m: string) =>
       {form === "collect" && (
         <form className="inline-form" onSubmit={(e) => {
           e.preventDefault();
-          run({ action: "collect", confirmedKg: Number(weight) || 0, pieces: Number(pieces) || 0, counterfactual: cf }, "Hand-over recorded.");
+          run({ action: "collect", confirmedKg: counted ? 0 : Number(weight) || 0, pieces: counted ? Number(pieces) || 0 : 0 }, "Hand-over recorded.");
         }}>
-          {counted && (
+          {counted ? (
             <div className="field">
               <label htmlFor={`p-${t.id}`}>Pieces handed over (of {t.listingPieces})</label>
               <input id={`p-${t.id}`} inputMode="numeric" required value={pieces}
                 onChange={(e) => setPieces(e.target.value.replace(/[^0-9]/g, ""))} />
             </div>
+          ) : (
+            <div className="field">
+              <label htmlFor={`w-${t.id}`}>Weight handed over (kg)</label>
+              <input id={`w-${t.id}`} inputMode="decimal" required value={weight}
+                placeholder={`Listed as about ${t.listingEstKg} kg`}
+                onChange={(e) => setWeight(e.target.value.replace(/[^0-9.]/g, ""))} />
+            </div>
           )}
-          <div className="field">
-            <label htmlFor={`w-${t.id}`}>{counted ? "Weight on the scale (kg, optional)" : "Weight on the scale (kg)"}</label>
-            <input id={`w-${t.id}`} inputMode="decimal" required={!counted} value={weight}
-              placeholder={counted ? `Leave blank to use about ${perPiece} kg each` : undefined}
-              onChange={(e) => setWeight(e.target.value.replace(/[^0-9.]/g, ""))} />
-          </div>
-          <fieldset className="field">
-            <legend>Without this pickup, it would have been</legend>
-            {meta.counterfactuals.map((c) => (
-              <label key={c.id} className="radio">
-                <input type="radio" name={`cf-${t.id}`} value={c.id} checked={cf === c.id} onChange={() => setCf(c.id)} required />
-                {c.label}
-              </label>
-            ))}
-          </fieldset>
           <div className="actions">
-            <button className="btn btn-primary" disabled={busy || !cf || (counted ? !pieces : !weight)}>Save hand-over</button>
+            <button className="btn btn-primary" disabled={busy || (counted ? !pieces : !weight)}>Save hand-over</button>
             <button type="button" className="btn" onClick={() => setForm("")}>Cancel</button>
           </div>
         </form>
@@ -196,7 +177,7 @@ function TransferCard({ t, onChanged }: { t: Transfer; onChanged: (m: string) =>
       {form === "outcome" && (
         <form className="inline-form" onSubmit={(e) => {
           e.preventDefault();
-          run({ action: "outcome", outcome, outcomeNote: note }, "Outcome recorded. It now counts toward impact.");
+          run({ action: "outcome", outcome, outcomeNote: note }, "Outcome recorded. The hand-over is finished.");
         }}>
           <fieldset className="field">
             <legend>What happened to it?</legend>

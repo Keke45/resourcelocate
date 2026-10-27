@@ -69,7 +69,7 @@ func TestHandOverRulesAndPermissions(t *testing.T) {
 		t.Fatalf("other request: %+v, want one declined", bt)
 	}
 
-	if _, err := s.Advance(ctx, giver.ID, ta.ID, domain.Step{Action: "collect", ConfirmedKg: 9, Counterfactual: "dumped_burned"}); err != nil {
+	if _, err := s.Advance(ctx, giver.ID, ta.ID, domain.Step{Action: "collect", ConfirmedKg: 9}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Advance(ctx, giver.ID, ta.ID, domain.Step{Action: "outcome", Outcome: "reused"}); !errors.Is(err, domain.ErrForbidden) {
@@ -155,5 +155,52 @@ func TestSessions(t *testing.T) {
 	}
 	if _, err := s.UserForSession(ctx, token); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("after logout: got %v, want not found", err)
+	}
+}
+
+func TestListingPhotos(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	giver, other := newUser(t, s, "giver"), newUser(t, s, "other")
+	l := domain.Listing{OwnerID: giver.ID, ProviderName: giver.Name, Item: "Monitors", Material: "electronics", Pieces: 2, Route: domain.RouteReuse, Area: "Kabwata"}
+	if err := s.CreateListing(ctx, &l); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPhoto(ctx, other.ID, l.ID, "image/jpeg", []byte("x")); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("photo by someone else: got %v, want forbidden", err)
+	}
+	for i := 0; i < domain.MaxPhotos; i++ {
+		n, err := s.AddPhoto(ctx, giver.ID, l.ID, "image/jpeg", []byte{byte('a' + i)})
+		if err != nil || n != i {
+			t.Fatalf("photo %d: n=%d err=%v", i, n, err)
+		}
+	}
+	if _, err := s.AddPhoto(ctx, giver.ID, l.ID, "image/jpeg", []byte("z")); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("photo over the limit: got %v, want conflict", err)
+	}
+	got, _ := s.Listing(ctx, l.ID)
+	ct, data, err := s.Photo(ctx, l.ID, 2)
+	if got.Photos != domain.MaxPhotos || ct != "image/jpeg" || string(data) != "c" || err != nil {
+		t.Fatalf("photo round trip: photos=%d ct=%s data=%q err=%v", got.Photos, ct, data, err)
+	}
+}
+
+func TestChangePasswordEndsOtherSessions(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	u := newUser(t, s, "user")
+	here, _, _ := s.CreateSession(ctx, u.ID)
+	phone, _, _ := s.CreateSession(ctx, u.ID)
+	if err := s.SetPassword(ctx, u.ID, "new-hash", here); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.PasswordHash(ctx, u.ID); h != "new-hash" {
+		t.Fatalf("hash after change: %q", h)
+	}
+	if _, err := s.UserForSession(ctx, here); err != nil {
+		t.Fatalf("current session ended: %v", err)
+	}
+	if _, err := s.UserForSession(ctx, phone); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other session: got %v, want not found", err)
 	}
 }

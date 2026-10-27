@@ -85,3 +85,53 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, auth.HashToken(token))
 	return err
 }
+
+// EnsureUser loads the account with u.Email, creating it with passwordHash
+// when it does not exist yet. It is used for the shared demo accounts.
+func (s *Store) EnsureUser(ctx context.Context, u *domain.User, passwordHash string) error {
+	got, _, err := s.UserByEmail(ctx, u.Email)
+	if err == nil {
+		*u = got
+		return nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return s.CreateUser(ctx, u, passwordHash)
+}
+
+// PasswordHash returns the stored password hash for userID.
+func (s *Store) PasswordHash(ctx context.Context, userID string) (string, error) {
+	var hash string
+	err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return hash, err
+}
+
+// SetPassword replaces userID's password and logs out every other session,
+// so a changed password locks out anyone who knew the old one. The session
+// whose token is keepToken stays signed in.
+func (s *Store) SetPassword(ctx context.Context, userID, passwordHash, keepToken string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`,
+		userID, auth.HashToken(keepToken)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateProfile changes the name and area shown on a user's listings and
+// requests from now on.
+func (s *Store) UpdateProfile(ctx context.Context, userID, name, area string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET name = ?, area = ? WHERE id = ?`, name, area, userID)
+	return err
+}

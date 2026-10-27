@@ -25,6 +25,19 @@ export default function AuthView({ mode, onSwitch, onSignedIn }: Props) {
   const [busy, setBusy] = useState(false);
   const signup = mode === "signup";
 
+  // demo signs in as one of the shared demo accounts (when the server has
+  // them on), so judges can try both sides of a hand-over without signing up.
+  async function demo(as: "giver" | "seeker") {
+    setBusy(true);
+    setError("");
+    try {
+      onSignedIn(await api.demoLogin(as));
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -96,6 +109,18 @@ export default function AuthView({ mode, onSwitch, onSignedIn }: Props) {
             {busy ? "One moment…" : signup ? "Create account" : "Log in"}
           </button>
         </form>
+
+        {meta.demoLogins && (
+          <div className="demo-box">
+            <p><strong>Judging this project?</strong> Try it without signing up. Use one account to list something and the
+              other to request it, in two browser windows or one after the other.</p>
+            <div className="actions">
+              <button className="btn" disabled={busy} onClick={() => demo("giver")}>Demo giver</button>
+              <button className="btn" disabled={busy} onClick={() => demo("seeker")}>Demo seeker</button>
+            </div>
+            <p className="fine">The demo accounts are shared, so you may see what other visitors did.</p>
+          </div>
+        )}
 
         <p className="auth-switch">
           {signup ? "Already have an account? " : "New here? "}

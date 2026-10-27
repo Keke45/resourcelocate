@@ -1,4 +1,4 @@
-import type { Dashboard, Draft, Listing, Match, Meta, NeedView, SavedNeed, Stats, Transfer, User } from "./types";
+import type { Dashboard, Listing, Match, Meta, NeedView, SavedNeed, Stats, Transfer, User } from "./types";
 
 // Thin client for the Go API. Every call rejects with an ApiError whose
 // message is safe to show the user as is.
@@ -39,7 +39,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 
-export type NewListing = Omit<Listing, "id" | "ownerId" | "providerName" | "status" | "createdAt">;
+export type NewListing = Omit<Listing, "id" | "ownerId" | "providerName" | "status" | "photos" | "createdAt">;
 export type NewNeed = Pick<SavedNeed, "material" | "kg" | "pieces" | "area" | "note">;
 export type Signup = { name: string; email: string; password: string; role: string; area: string };
 
@@ -47,8 +47,31 @@ export type Signup = { name: string; email: string; password: string; role: stri
 // body; the others are a bare POST.
 export type Step =
   | { action: "accept" | "decline" | "fail" }
-  | { action: "collect"; confirmedKg: number; pieces: number; counterfactual: string }
+  | { action: "collect"; confirmedKg: number; pieces: number }
   | { action: "outcome"; outcome: string; outcomeNote: string };
+
+// photoUrl is where photo n (from 0) of a listing is served; the session
+// cookie goes along with the image request.
+export const photoUrl = (listingId: string, n = 0) => `/api/listings/${encodeURIComponent(listingId)}/photos/${n}`;
+
+// shrinkPhoto scales a camera photo down to at most 1280 px on its long side
+// and re-encodes it as JPEG, so uploads stay small on mobile data. If the
+// browser cannot decode the file, the original is returned.
+export async function shrinkPhoto(file: File, maxSide = 1280): Promise<Blob> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/jpeg", 0.82));
+    return blob ?? file;
+  } catch {
+    return file;
+  }
+}
 
 export const api = {
   meta: () => call<Meta>("/api/meta"),
@@ -57,18 +80,20 @@ export const api = {
   me: () => call<User>("/api/me"),
   signup: (s: Signup) => call<User>("/api/auth/signup", json("POST", s)),
   login: (email: string, password: string) => call<User>("/api/auth/login", json("POST", { email, password })),
+  demoLogin: (as: "giver" | "seeker") => call<User>("/api/auth/demo", json("POST", { as })),
+  updateProfile: (p: { name: string; area: string }) => call<User>("/api/me", json("PUT", p)),
+  changePassword: (current: string, next: string) =>
+    call<null>("/api/me/password", json("POST", { current, new: next })),
   logout: () => call<null>("/api/auth/logout", { method: "POST" }),
 
   dashboard: () => call<Dashboard>("/api/dashboard"),
+  publicListing: (id: string) => call<Listing>(`/api/public/listings/${encodeURIComponent(id)}`),
   matches: (q: { material: string; kg: string; pieces: string; area: string }) =>
     call<Match[]>("/api/matches?" + new URLSearchParams(q)),
   createListing: (l: NewListing) => call<{ listing: Listing; waiting: number }>("/api/listings", json("POST", l)),
+  addPhoto: (id: string, photo: Blob) =>
+    call<{ n: number }>(`/api/listings/${encodeURIComponent(id)}/photos`, { method: "POST", body: photo }),
   withdrawListing: (id: string) => call<null>(`/api/listings/${encodeURIComponent(id)}/withdraw`, { method: "POST" }),
-  draftFromPhoto: (photo: File) => {
-    const form = new FormData();
-    form.append("photo", photo);
-    return call<Draft>("/api/listings/draft", { method: "POST", body: form });
-  },
 
   needs: () => call<NeedView[]>("/api/needs"),
   saveNeed: (n: NewNeed) => call<SavedNeed>("/api/needs", json("POST", n)),

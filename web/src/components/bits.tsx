@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { photoUrl } from "../api";
 import { useLabels } from "../meta";
 import type { TransferStatus } from "../types";
 
@@ -35,5 +37,26 @@ export function Stepper({ status }: { status: TransferStatus }) {
         );
       })}
     </ol>
+  );
+}
+
+// Gallery shows a listing's photos: one large, with thumbnails to switch
+// between them when there are several.
+export function Gallery({ id, photos, item }: { id: string; photos: number; item: string }) {
+  const [shown, setShown] = useState(0);
+  if (photos === 0) return null;
+  return (
+    <div className="gallery">
+      <img className="sheet-photo" src={photoUrl(id, shown)} alt={`Photo ${shown + 1} of ${item}`} />
+      {photos > 1 && (
+        <div className="gallery-thumbs">
+          {Array.from({ length: photos }, (_, i) => (
+            <button key={i} type="button" aria-pressed={i === shown} aria-label={`Show photo ${i + 1}`} onClick={() => setShown(i)}>
+              <img src={photoUrl(id, i)} alt="" loading="lazy" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

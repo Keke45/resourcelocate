@@ -3,7 +3,6 @@ package domain
 import (
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 )
@@ -16,6 +15,9 @@ const (
 	ListingWithdrawn = "withdrawn"
 )
 
+// MaxPhotos is how many reference photos a listing can carry.
+const MaxPhotos = 4
+
 type Listing struct {
 	ID string `json:"id"`
 	// OwnerID is the account that listed it; only the owner can accept
@@ -26,17 +28,19 @@ type Listing struct {
 	Item         string `json:"item"`
 	Material     string `json:"material"`
 	Quantity     string `json:"quantity"`
-	// Pieces is the number of items for things that are counted, such as
-	// monitors or desks. 0 means the listing is measured by weight only.
-	Pieces int `json:"pieces"`
-	// EstKg is the estimated total weight. It is still needed for counted
-	// items because diversion and CO2e are calculated by weight.
-	EstKg     float64   `json:"estKg"`
-	Condition string    `json:"condition"`
-	Route     string    `json:"route"`
-	Area      string    `json:"area"`
-	Notes     string    `json:"notes"`
-	Status    string    `json:"status"`
+	// A listing is measured one way: Pieces for things that are counted,
+	// such as monitors or desks, or EstKg (estimated total weight) for bulk
+	// material. Exactly one of the two is set.
+	Pieces    int     `json:"pieces"`
+	EstKg     float64 `json:"estKg"`
+	Condition string  `json:"condition"`
+	Route     string  `json:"route"`
+	Area      string  `json:"area"`
+	Notes     string  `json:"notes"`
+	Status    string  `json:"status"`
+	// Photos is how many reference photos the giver attached, served from
+	// /api/listings/{id}/photos/{n} for n from 0 to Photos-1.
+	Photos    int       `json:"photos"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -60,16 +64,13 @@ type Transfer struct {
 	IntendedUse  string  `json:"intendedUse"`
 	Status       string  `json:"status"`
 	ConfirmedKg  float64 `json:"confirmedKg"`
-	// ConfirmedPieces is how many items changed hands, for counted listings.
-	ConfirmedPieces int `json:"confirmedPieces"`
-	// KgEstimated is true when ConfirmedKg was worked out from the listing's
-	// weight per piece instead of read off a scale.
-	KgEstimated    bool      `json:"kgEstimated"`
-	Counterfactual string    `json:"counterfactual"`
-	Outcome        string    `json:"outcome"`
-	OutcomeNote    string    `json:"outcomeNote"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	// ConfirmedPieces is how many items changed hands, for counted listings;
+	// ConfirmedKg is the weight handed over, for listings sold by weight.
+	ConfirmedPieces int       `json:"confirmedPieces"`
+	Outcome         string    `json:"outcome"`
+	OutcomeNote     string    `json:"outcomeNote"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // ErrInvalid marks a request the caller can fix; handlers answer 400.
@@ -109,8 +110,12 @@ func ValidateListing(l *Listing) error {
 		return invalidf("describe the item")
 	case l.Pieces < 0 || l.Pieces > 100000:
 		return invalidf("number of pieces must be between 1 and 100,000")
-	case l.EstKg <= 0 || l.EstKg > 100000:
+	case l.Pieces == 0 && (l.EstKg <= 0 || l.EstKg > 100000):
 		return invalidf("estimated weight must be between 0 and 100,000 kg")
+	}
+	if l.Pieces > 0 {
+		// Counted listings are measured in pieces only.
+		l.EstKg = 0
 	}
 	if _, ok := MaterialByID(l.Material); !ok {
 		return invalidf("unknown material %q", l.Material)
@@ -140,9 +145,8 @@ func CanRequest(l Listing, role string) error {
 }
 
 // Authorize checks that user may take action on transfer t of listing l.
-// The giver answers requests and confirms the hand-over, because they know
-// what would have happened to the material otherwise. The receiver records
-// what they did with it.
+// The giver answers requests and confirms the hand-over; the receiver
+// records what they did with it.
 func Authorize(userID string, t Transfer, l Listing, action string) error {
 	switch action {
 	case "accept", "decline", "collect", "fail":
@@ -159,12 +163,11 @@ func Authorize(userID string, t Transfer, l Listing, action string) error {
 
 // Step is one move in a transfer's lifecycle.
 type Step struct {
-	Action         string  `json:"action"`
-	ConfirmedKg    float64 `json:"confirmedKg"`
-	Pieces         int     `json:"pieces"`
-	Counterfactual string  `json:"counterfactual"`
-	Outcome        string  `json:"outcome"`
-	OutcomeNote    string  `json:"outcomeNote"`
+	Action      string  `json:"action"`
+	ConfirmedKg float64 `json:"confirmedKg"`
+	Pieces      int     `json:"pieces"`
+	Outcome     string  `json:"outcome"`
+	OutcomeNote string  `json:"outcomeNote"`
 }
 
 // Apply moves a transfer for listing l one step and returns the listing
@@ -188,34 +191,20 @@ func Apply(t *Transfer, l Listing, s Step) (listingStatus string, err error) {
 		if t.Status != TransferAccepted {
 			return "", conflictf("only an accepted transfer can be collected")
 		}
-		if _, ok := CounterfactualByID(s.Counterfactual); !ok {
-			return "", invalidf("say what would have happened to the material otherwise")
-		}
-		if s.ConfirmedKg < 0 || s.ConfirmedKg > 100000 {
-			return "", invalidf("weight must be between 0 and 100,000 kg")
-		}
+		// The giver confirms how much actually changed hands, in the
+		// listing's own unit; it can be less than was listed.
 		if l.Pieces > 0 {
-			// Counted items: the piece count is required. A scale is often not
-			// at hand for a monitor or a desk, so without a weight we use the
-			// listing's estimate per piece and mark the weight as estimated.
 			if s.Pieces < 1 || s.Pieces > l.Pieces {
 				return "", invalidf("enter how many pieces were handed over, from 1 to %d", l.Pieces)
 			}
 			t.ConfirmedPieces = s.Pieces
-			t.KgEstimated = s.ConfirmedKg == 0
-			if t.KgEstimated {
-				t.ConfirmedKg = math.Round(float64(s.Pieces)*l.EstKg/float64(l.Pieces)*10) / 10
-			} else {
-				t.ConfirmedKg = s.ConfirmedKg
-			}
 		} else {
-			if s.ConfirmedKg == 0 {
-				return "", invalidf("enter the weight from the scale, in kg")
+			if s.ConfirmedKg <= 0 || s.ConfirmedKg > 100000 {
+				return "", invalidf("enter the weight handed over, in kg")
 			}
 			t.ConfirmedKg = s.ConfirmedKg
 		}
 		t.Status = TransferCollected
-		t.Counterfactual = s.Counterfactual
 		return "", nil
 	case "fail":
 		if t.Status != TransferAccepted {

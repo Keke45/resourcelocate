@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { kg } from "../meta";
+import { kg, useMeta } from "../meta";
 import type { Stats } from "../types";
 
 type Props = { onStart: () => void; onLogin: () => void };
@@ -16,7 +16,7 @@ const principles = [
   },
   {
     title: "Count only what really happened",
-    body: "A listing isn't impact. Something counts only once it has been handed over and the receiver says what they did with it. Material that would have been used anyway doesn't count.",
+    body: "A listing on its own isn't impact. We count what was actually handed over, once the receiver confirms what they did with it.",
   },
   {
     title: "Safe by design",
@@ -29,7 +29,7 @@ const principles = [
 ];
 
 const steps = [
-  { title: "List what you don't need", body: "Snap a photo. We draft the listing, you check it and publish it. Count items or give a weight." },
+  { title: "List what you don't need", body: "Say what it is, count the items or estimate the weight, and add a photo or two if you like." },
   { title: "Save what you're looking for", body: "Describe a need once. It stays on your dashboard, and new matching listings show up there as they're posted." },
   { title: "Hand it over and record it", body: "The giver accepts and confirms the pickup. The receiver says what became of it. That's what gets counted." },
 ];
@@ -43,6 +43,7 @@ const audiences = [
 // Landing is the public front page: the problem, the philosophy behind the
 // system, how it works, and live community totals.
 export default function Landing({ onStart, onLogin }: Props) {
+  const meta = useMeta();
   const [stats, setStats] = useState<Stats | null>(null);
 
   useEffect(() => {
@@ -51,7 +52,7 @@ export default function Landing({ onStart, onLogin }: Props) {
 
   // Only show totals once there is something to show; a new deployment
   // starts at zero and that is not worth a headline.
-  const hasActivity = stats && (stats.openListings > 0 || stats.openNeeds > 0 || stats.impact.completed > 0);
+  const hasActivity = stats && (stats.openListings > 0 || stats.openNeeds > 0 || stats.totals.handedOn.handOvers > 0);
 
   return (
     <div className="landing">
@@ -64,14 +65,15 @@ export default function Landing({ onStart, onLogin }: Props) {
         </p>
         <div className="actions">
           <button className="btn btn-primary btn-large" onClick={onStart}>Create a free account</button>
-          <button className="btn btn-large" onClick={onLogin}>Log in</button>
+          <button className="btn btn-large" onClick={onLogin}>{meta.demoLogins ? "Log in or try the demo" : "Log in"}</button>
         </div>
         {hasActivity && (
           <dl className="hero-stats">
             <div><dt>Open listings</dt><dd className="num">{stats.openListings}</dd></div>
             <div><dt>People looking</dt><dd className="num">{stats.openNeeds}</dd></div>
-            <div><dt>Kept out of the waste stream</dt><dd className="num">{kg(stats.impact.divertedKg)}</dd></div>
-            {stats.impact.pieces > 0 && <div><dt>Items handed on</dt><dd className="num">{stats.impact.pieces}</dd></div>}
+            <div><dt>Finished hand-overs</dt><dd className="num">{stats.totals.handedOn.handOvers}</dd></div>
+            {stats.totals.handedOn.kg > 0 && <div><dt>Material handed on</dt><dd className="num">{kg(stats.totals.handedOn.kg)}</dd></div>}
+            {stats.totals.handedOn.pieces > 0 && <div><dt>Items handed on</dt><dd className="num">{stats.totals.handedOn.pieces}</dd></div>}
           </dl>
         )}
       </section>
@@ -130,6 +132,15 @@ export default function Landing({ onStart, onLogin }: Props) {
           ))}
         </ul>
         <p className="fine landing-note">One account does both: give away what you don't need and find what you do.</p>
+      </section>
+
+      <section className="panel method" aria-labelledby="method-title">
+        <h2 id="method-title" className="landing-title">What we count</h2>
+        <p>
+          Simply what changed hands: the kilograms and pieces given away and claimed through finished hand-overs. A
+          hand-over finishes when the giver confirms the pickup and the receiver says what they did with it. Listings on
+          their own don't count.
+        </p>
       </section>
 
       <section className="panel cta">

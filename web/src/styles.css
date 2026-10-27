@@ -119,6 +119,44 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .tab-label { font-weight: 600; font-size: 15px; }
 .tab[aria-current="page"] .tab-label { color: var(--accent); }
 .tab-hint { font-size: 12px; }
+.tab-text { display: flex; flex-direction: column; min-width: 0; }
+.tab-icon { width: 20px; height: 20px; flex: none; }
+.tab-badge {
+  display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px;
+  border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600;
+}
+
+/* Signed-in layout: sidebar beside the page */
+.app { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0, 1fr); }
+.app-main { display: flex; flex-direction: column; min-width: 0; }
+.sidebar {
+  position: sticky; top: 0; height: 100vh; z-index: 10;
+  display: flex; flex-direction: column; gap: 28px;
+  padding: calc(20px + env(safe-area-inset-top, 0px)) 14px 16px max(14px, env(safe-area-inset-left, 0px));
+  border-right: 1px solid var(--glass-edge);
+}
+/* Same trick as the masthead: blur on a pseudo-element so the phone tab bar
+   stays fixed to the viewport. */
+.sidebar::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+}
+.sidebar .brand { padding: 0 6px; }
+.sidebar .tabs { flex-direction: column; }
+.sidebar .tab { flex-direction: row; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 9px 10px; }
+.sidebar .tab-badge { margin-left: auto; }
+.side-account {
+  margin-top: auto; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: center;
+  padding: 12px 10px 0; border-top: 1px solid var(--glass-edge);
+}
+.side-account .btn { grid-column: 1 / -1; justify-self: start; }
+.side-who { display: flex; flex-direction: column; min-width: 0; }
+.side-who .fine { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar {
+  width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; border: 0; padding: 0; cursor: pointer;
+  background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 14px;
+}
 
 .content {
   flex: 1; width: 100%; max-width: 1120px; margin: 0 auto;
@@ -167,6 +205,9 @@ button.card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .banner { border-radius: 8px; padding: 10px 12px; font-size: 14px; }
 .banner-info { background: var(--info-soft); color: var(--info); }
 .banner-warn { background: var(--warn-soft); color: var(--warn); }
+.field-error { color: var(--critical); }
+.settings { display: grid; gap: 16px; max-width: 640px; }
+.settings .view-head { margin-bottom: 4px; }
 .banner-error { background: var(--critical-soft); color: var(--critical); }
 .banner-critical { background: var(--critical-soft); color: var(--critical); display: grid; gap: 8px; }
 
@@ -236,23 +277,32 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); outline
 .sheet-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
 .sheet-head h2 { font: 700 24px/1.15 var(--font-display); }
 .icon-btn { width: 40px; height: 40px; border-radius: 8px; border: 1px solid var(--line); background: none; font-size: 22px; cursor: pointer; flex: none; }
+.shared { display: grid; gap: 16px; max-width: 680px; margin: 0 auto; padding: 24px; }
+.shared .view-title { margin: 0; }
+.install-icon { width: 18px; height: 18px; margin-right: 6px; flex: none; }
+.side-install { margin-top: auto; justify-self: start; align-self: flex-start; }
+.side-install + .side-account { margin-top: 0; }
+.sheet-tools { display: flex; gap: 8px; align-items: center; flex: none; }
 .facts { display: grid; gap: 8px; margin: 0; }
 .facts div { display: grid; grid-template-columns: 96px 1fr; gap: 12px; }
 .facts dt { font-size: 13px; color: var(--muted); }
 .facts dd { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
 /* Give */
-.give-grid { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 20px; align-items: start; }
-.photo-panel { position: relative; display: grid; gap: 12px; }
-.dropzone {
-  display: grid; place-items: center; text-align: center; aspect-ratio: 4 / 3; max-width: 100%;
-  border: 2px dashed var(--line); border-radius: var(--r); background: var(--field); cursor: pointer; overflow: hidden;
+.give-form { max-width: 760px; }
+.photo-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; margin-top: 4px; }
+.photo-pick, .photo-add { position: relative; aspect-ratio: 1; border-radius: 10px; overflow: hidden; }
+.photo-pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-remove {
+  position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; border-radius: 50%; border: 0; cursor: pointer;
+  background: rgb(20 26 22 / 0.7); color: #fff; font-size: 18px; line-height: 1;
 }
-.dropzone:hover { border-color: var(--accent); }
-.dropzone span { display: grid; gap: 4px; padding: 16px; }
-.dropzone strong { color: var(--accent); }
-.dropzone.has-photo { border-style: solid; }
-.dropzone img { width: 100%; height: 100%; object-fit: cover; }
+.photo-add {
+  display: grid; place-content: center; justify-items: center; gap: 2px; cursor: pointer;
+  border: 2px dashed var(--line); background: var(--field); color: var(--accent); font-weight: 600; font-size: 14px;
+}
+.photo-add span { font-size: 26px; line-height: 1; }
+.photo-add:hover { border-color: var(--accent); }
 
 /* Activity */
 .segmented { display: inline-flex; border-radius: 10px; padding: 3px; margin-bottom: 16px; }
@@ -300,6 +350,7 @@ a.brand { color: inherit; text-decoration: none; }
 .account-name { font-size: 14px; font-weight: 600; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .boot { max-width: 520px; margin: 40px auto; text-align: center; }
 .footer { text-align: center; font-size: 12px; color: var(--muted); padding: 16px var(--gutter-r) 24px var(--gutter); }
+.footer a { color: var(--accent); font-weight: 600; }
 .content-wide { max-width: 1180px; }
 
 /* Landing */
@@ -345,6 +396,8 @@ a.brand { color: inherit; text-decoration: none; }
 .role-option input { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--accent); }
 .role-option span { display: grid; gap: 2px; }
 .role-option strong { font-size: 15px; color: var(--ink); }
+.demo-box { display: grid; gap: 10px; padding: 16px; border-radius: 12px; background: var(--sunken); font-size: 14px; }
+.demo-box .actions { gap: 8px; }
 .auth-switch { font-size: 14px; color: var(--muted); }
 
 /* Dashboard */
@@ -384,6 +437,23 @@ a.brand { color: inherit; text-decoration: none; }
 .match-row .muted { font-size: 13px; }
 .fit-score { color: var(--accent); font-size: 13px; }
 
+/* Photos */
+.card.listing { display: flex; gap: 14px; align-items: flex-start; }
+.listing-body { flex: 1; min-width: 0; }
+.thumb { width: 92px; height: 92px; object-fit: cover; border-radius: 8px; flex: none; background: var(--sunken); }
+.thumb-small { width: 48px; height: 48px; border-radius: 6px; }
+.gallery { display: grid; gap: 8px; }
+.gallery-thumbs { display: flex; gap: 8px; }
+.gallery-thumbs button { padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: none; cursor: pointer; width: 60px; height: 60px; }
+.gallery-thumbs button[aria-pressed="true"] { border-color: var(--accent); }
+.gallery-thumbs img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sheet-photo { width: 100%; max-height: 300px; object-fit: cover; border-radius: 10px; background: var(--sunken); }
+
+/* "What we count" on the landing page */
+.method { display: grid; gap: 12px; }
+.method p { max-width: 75ch; color: var(--muted); }
+.method a, .stat-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+
 /* Toast */
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%); z-index: 30;
@@ -411,18 +481,46 @@ a.brand { color: inherit; text-decoration: none; }
   /* Leave room for the fixed bottom tab bar. */
   .footer { padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px)); }
   .toast { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
-  .find, .give-grid { grid-template-columns: minmax(0, 1fr); }
+  .find { grid-template-columns: minmax(0, 1fr); }
   .need { position: static; }
   .need-grid { grid-template-columns: 1fr 1fr; }
   .stats { grid-template-columns: 1fr 1fr; }
   .account-name { display: none; }
+  .thumb { width: 72px; height: 72px; }
   .dash-grid { grid-template-columns: minmax(0, 1fr); }
   .problem { grid-template-columns: minmax(0, 1fr); padding: 20px; gap: 8px; }
   .landing { gap: 40px; }
   .match-row { grid-template-columns: minmax(0, 1fr) auto; }
   .match-row .muted { grid-column: 1; grid-row: 2; }
+  /* The sidebar folds into a top bar; its nav uses the bottom tab bar above. */
+  .app { display: block; }
+  .sidebar {
+    height: auto; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px;
+    padding: calc(12px + env(safe-area-inset-top, 0px)) var(--gutter-r) 12px var(--gutter);
+    border-right: 0; border-bottom: 1px solid var(--glass-edge);
+  }
+  .sidebar .brand { padding: 0; }
+  .sidebar .tabs { flex-direction: row; }
+  .sidebar .tab { flex-direction: column; gap: 2px; padding: 6px 4px; width: auto; text-align: center; position: relative; }
+  .sidebar .tab-icon { width: 20px; height: 20px; }
+  .sidebar .tab-label { font-size: 12px; }
+  .sidebar .tab-badge { position: absolute; top: 2px; left: calc(50% + 6px); margin: 0; min-width: 18px; height: 18px; font-size: 11px; }
+  .side-account { margin: 0; padding: 0; border: 0; display: flex; }
+  .side-who { display: none; }
+  /* On phones the install button shrinks to its icon. */
+  .side-install { margin: 0; }
+  .side-install, .public-install { padding: 0 8px; }
+  .install-label { display: none; }
+  .install-icon { margin: 0; }
+  .sidebar .tab-settings { display: none; }
+  .avatar { width: 32px; height: 32px; font-size: 13px; }
 }
 @media (max-width: 420px) {
+  .brand { gap: 8px; }
+  .brand-mark { width: 28px; height: 28px; }
+  .brand-name { font-size: 18px; }
+  .account { gap: 4px; }
+  .account .btn { white-space: nowrap; padding: 0 10px; }
   .row { grid-template-columns: minmax(0, 1fr); }
   .need .view-lede, .need .fine { display: none; }
   .stepper .step-name { font-size: 11px; }
@@ -433,5 +531,5 @@ a.brand { color: inherit; text-decoration: none; }
 
 /* Browsers without backdrop blur get solid surfaces so text stays readable. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .masthead::before, .panel, .card, .stat:not(.stat-lead), .sheet, .segmented, .tabs { background: var(--surface-solid); }
+  .masthead::before, .panel, .card, .stat:not(.stat-lead), .sheet, .segmented, .tabs, .sidebar::before { background: var(--surface-solid); }
 }

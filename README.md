@@ -1,6 +1,6 @@
 # ResourceLocate
 
-ResourceLocate connects people who have unwanted materials with people who can use them, and counts only the kilograms that are actually reused or recycled.
+ResourceLocate connects people who have unwanted materials with people who can use them, and shows how much has actually been given and claimed.
 
 ## The problem
 
@@ -12,9 +12,9 @@ The problem is that people who have unwanted materials often struggle to connect
 
 ## The idea
 
-ResourceLocate is the missing connection. Anyone with unwanted material lists it in a minute from a photo. Anyone who needs material finds it ranked by what, how much and how close. Recyclers see the items that need specialised handling.
+ResourceLocate is the missing connection. Anyone with unwanted material lists it in a minute, with photos if they like. Anyone who needs material finds it ranked by what, how much and how close. Recyclers see the items that need specialised handling.
 
-A carpentry workshop's offcuts become a student's project. A school's old monitors go to a community computer room. Each hand-over is confirmed and its outcome recorded, so impact means verified waste diverted, not just listings.
+A carpentry workshop's offcuts become a student's project. A school's old monitors go to a community computer room. Each hand-over is confirmed by both sides, so the totals show what really changed hands, not just what was listed.
 
 Built for [Green Shift Hacks](https://green-shift-hacks.devpost.com/). It is piloted in Lusaka and built to work in any city.
 
@@ -24,29 +24,29 @@ Built for [Green Shift Hacks](https://green-shift-hacks.devpost.com/). It is pil
 | --- | --- |
 | **Landing** | Public front page: the problem, what we believe (use before waste, connection is the missing piece, count only what really happened, safe by design, local first), how it works, who it's for, and live community totals. |
 | **Sign up / Log in** | Email and password accounts. Each account has a name, a type (individual, business or group, recycler) and an area. One account can both give and receive. |
-| **Dashboard** | What needs your attention, what you're waiting on, your saved needs with their current matches, your listings (with withdraw), and the impact of hand-overs you took part in. |
+| **Dashboard** | What needs your attention, what you're waiting on, your saved needs with their current matches, your listings (with withdraw), and how much you've given and claimed. |
 | **Find** | Search by material, amount (kg or pieces) and area. Results are ranked by a transparent score: material 40, quantity 25, route fit 15, same area 20. Save the search as a *need* and it stays on your dashboard, picking up new listings as they're posted. |
-| **Give** | Take a photo and Claude drafts the listing (item, material, quantity, piece count, estimated kg, condition, route) and flags hazardous items. You check it and publish. You're told if people already have an open need for that material. |
-| **Hand-overs** | Requested → accepted → collected → outcome recorded. The giver accepts and confirms the pickup (weight or pieces, plus "what would have happened otherwise?"). The receiver records what they did with it. The giver's phone number is shown to the receiver only after accepting. |
+| **Give** | Describe the item, choose by weight (kg) or by count (pieces), and optionally add up to 4 reference photos so people looking can see what it is. Photos are shrunk in the browser before upload. You're told if people already have an open need for that material. |
+| **Shared listing** | Every listing has its own link, `/l/{id}`, with a **Share** button on the dashboard, in the request window and on the page itself. On phones it opens the phone's share sheet (WhatsApp, SMS, Facebook, email and so on); elsewhere it copies the link. Anyone can open the link without an account. Chat apps show a preview with the item, amount, area and first photo. Visitors who aren't signed in can log in or sign up and land back on the listing to ask for it. The giver's phone number is never on this page. |
+| **Settings** | Change your name and area, and change your password. Changing the password logs you out on every other device. |
+| **Hand-overs** | Requested → accepted → collected → outcome recorded. The giver accepts and confirms the pickup (how many pieces, or how many kg). The receiver records what they did with it. The giver's phone number is shown to the receiver only after accepting. |
+
+The app can be installed: Chrome, Edge and Samsung Internet show an **Install app** button (on phones, a download icon in the top bar); on an iPhone, use Share > Add to Home Screen. Installed or not, a service worker caches the app's pages, scripts, styles, fonts and icons, so it opens quickly on slow mobile data and still opens offline. Listings and hand-overs always come fresh from the server.
 
 Every listing has one of four routes: direct reuse, repair or repurpose, recycling or recovery, or specialised handling. Specialised-handling items can only be requested by recyclers.
 
-## How impact is counted
+## What is counted
 
-```
-diverted kg   = handed-over kg × [would otherwise have been dumped, burned or landfilled]
-CO₂e avoided  = diverted kg × emission factor for the material
-```
+Simply what changed hands. A hand-over finishes when the giver confirms the pickup and the receiver records what they did with it. Only finished hand-overs count; a listing on its own doesn't.
 
-A transfer counts only after the hand-over is confirmed and the outcome recorded. Material that would have been stored, sold or given away anyway counts as zero.
+- **Given:** what you handed over from your listings.
+- **Claimed:** what you received from other people's listings.
 
-### Weight and pieces
+Each listing is measured one way. Loose material such as offcuts, sawdust or fabric is listed by weight (kg). Separate items such as monitors, desks or chairs are listed by count (pieces). Totals keep the two apart, for example "45 kg and 12 pieces".
 
-Loose material such as offcuts, sawdust or fabric is listed by weight. Separate items such as monitors, desks or chairs are listed by count, with a rough weight per piece. When a school hands on 12 monitors, the app records 12 pieces and the dashboard shows them as items handed on.
+### Open records
 
-Weight is still kept for every listing because diversion and CO₂e are calculated by weight: emission factors are per kilogram, and a monitor and a chair are not worth the same. At hand-over the receiver enters the number of pieces. A scale reading is optional for counted items. Without one, the weight comes from the provider's estimate per piece, and the dashboard shows how many of the kilograms were estimated this way.
-
-> **The emission factors in `internal/domain/catalog.go` are placeholders.** Replace them with cited values, for example from the [US EPA WARM model](https://www.epa.gov/waste-reduction-model) or [UK government conversion factors](https://www.gov.uk/government/collections/government-conversion-factors-for-company-reporting), before quoting any CO₂e figure.
+`GET /api/records.csv` downloads every finished hand-over: date, material, item, area, receiver type, pieces or kg, and what the receiver did with it. It has no names, contacts or notes. The rows add up to the totals on the site, so anyone can check them.
 
 ## Run it
 
@@ -60,14 +60,6 @@ go run ./cmd/server
 The built web app is committed in `internal/webui/dist` and embedded in the binary, so this one command runs everything. The app starts empty: create an account, then list something or save a need. Everything is stored in the SQLite file (`resource.db` by default) and is still there after a restart. To start over, stop the server and delete that file.
 
 To try both sides of a hand-over, create two accounts, for example one in a normal window and one in a private window.
-
-To turn on photo-to-listing, set an Anthropic API key:
-
-```sh
-ANTHROPIC_API_KEY=sk-ant-... go run ./cmd/server
-```
-
-Without a key, the Give screen still works and every field is filled in by hand.
 
 ### Developing the front end
 
@@ -84,7 +76,7 @@ After changing anything in `web/`, run `cd web && npm run build` to refresh the 
 go test ./...
 ```
 
-The tests cover password hashing, sessions, who may take each hand-over step, the transfer lifecycle, counted items, the recyclers-only rule, match ranking, withdrawing listings, saved needs and the impact calculation.
+The tests cover password hashing, sessions and password changes, rate limiting, who may take each hand-over step, the transfer lifecycle, weight and counted listings, the recyclers-only rule, match ranking, withdrawing listings, saved needs, listing photos and the given and claimed totals.
 
 ## Configuration
 
@@ -92,8 +84,12 @@ The tests cover password hashing, sessions, who may take each hand-over step, th
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP port |
 | `DB_PATH` | `resource.db` | SQLite file |
-| `ANTHROPIC_API_KEY` | unset | Turns on photo-to-listing |
-| `CLAUDE_MODEL` | `claude-opus-5-5` | Model used to read photos |
+| `TRUST_PROXY` | unset | `1` when running behind a proxy that sets `X-Forwarded-For` (Render, Fly.io), so rate limits apply per visitor instead of to the proxy. Leave unset otherwise, since anyone can send that header. |
+| `DEMO_LOGINS` | unset | `1` adds "Demo giver" and "Demo seeker" buttons on the login page, so judges can try both sides of a hand-over without signing up. The two accounts start empty and are shared by everyone who uses them. |
+
+## Rate limits
+
+Every API request is limited per IP address: bursts of 300, then 5 a second, photos included. Sign-up, login, demo login and password changes are limited much more tightly: 10 tries per IP, then one every 30 seconds. Logins are also limited per email address, 10 tries then one a minute, so guessing one account's password from many addresses is slow too. Over the limit the API answers `429` with a `Retry-After` header and the app shows how long to wait. The limits live in `internal/api/limits.go`; they are kept in memory, so they reset on restart and each server instance keeps its own.
 
 ## Deploy
 
@@ -103,13 +99,14 @@ The `Dockerfile` builds the web app and a static Go binary. Any host that runs a
 
 ```
 cmd/server         entry point: config and HTTP server
-internal/domain    rules: catalog, accounts, lifecycle and permissions, matching, needs, impact (with tests)
+internal/domain    rules: catalog, accounts, lifecycle and permissions, matching, needs, totals (with tests)
 internal/auth      password hashing (PBKDF2-SHA256) and session tokens
 internal/store     SQLite storage for accounts, sessions, listings, needs and hand-overs
-internal/vision    photo to draft listing with Claude
-internal/api       JSON API
+internal/ratelimit token-bucket rate limiter
+internal/api       JSON API, rate limits
 internal/webui     embedded React build
 web/               React + TypeScript + Vite front end
+web/public         app manifest, service worker (sw.js) and icons
 ```
 
 ## API
@@ -118,21 +115,27 @@ Public:
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/meta` | Materials, routes, areas, roles, counterfactual and outcome options |
+| `GET /api/meta` | Materials, routes, areas, roles and outcome options |
 | `GET /api/stats` | Community totals for the landing page |
 | `POST /api/auth/signup` | Create an account and log in |
 | `POST /api/auth/login` | Log in (sets an HttpOnly session cookie) |
 | `POST /api/auth/logout` | Log out |
+| `POST /api/auth/demo` | `{"as":"giver"}` or `{"as":"seeker"}`: log in to a demo account (only with `DEMO_LOGINS=1`) |
+| `GET /api/records.csv` | Every finished hand-over as CSV, without names |
+| `GET /api/public/listings/{id}` | One listing for its share page (no phone number) |
+| `GET /api/listings/{id}/photos/{n}` | Photo n of a listing (not served once the listing is withdrawn) |
+| `GET /l/{id}` | The share page: the app with link-preview tags for that listing |
 
 Signed in:
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/me` | The signed-in account |
-| `GET /api/dashboard` | Your listings, needs with matches, hand-overs and impact |
+| `GET /api/me`, `PUT /api/me` | The signed-in account; change name and area |
+| `POST /api/me/password` | `{"current": "...", "new": "..."}`: change password, logging out other devices |
+| `GET /api/dashboard` | Your listings, needs with matches, hand-overs, and what you've given and claimed |
 | `POST /api/listings` | Publish a listing |
-| `POST /api/listings/draft` | Multipart `photo` to draft listing |
 | `POST /api/listings/{id}/withdraw` | Take down one of your open listings |
+| `POST /api/listings/{id}/photos` | Add a reference photo (raw JPEG, PNG or WebP body, up to 2 MB, at most 4 per listing) |
 | `GET /api/matches?material=&kg=&pieces=&area=` | Ranked open listings from other people |
 | `GET /api/needs`, `POST /api/needs` | Your saved needs (with live matches), save a need |
 | `POST /api/needs/{id}/close` | Remove a need |
@@ -142,8 +145,7 @@ Signed in:
 
 ## Limitations
 
-- No email verification or password reset yet, and no rate limit on login attempts. Add these before opening sign-up to the public.
-- Weights read from photos are estimates. Only weights confirmed at hand-over count toward impact.
-- The counterfactual is self-reported by givers.
+- No email verification, and no "forgot password" email: a signed-in user can change their password in Settings, but someone who forgets it can't reset it themselves yet. Both need an email service.
+- Amounts are what the giver confirms at hand-over; nothing weighs or counts them independently.
 - Matching only knows whether two places are in the same area, not the distance between them.
-- Listings can be withdrawn but not edited yet.
+- Listings can be withdrawn but not edited, and photos can't be changed after publishing.

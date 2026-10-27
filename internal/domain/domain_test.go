@@ -2,7 +2,6 @@ package domain
 
 import (
 	"errors"
-	"math"
 	"slices"
 	"testing"
 	"time"
@@ -11,7 +10,7 @@ import (
 func TestApplyLifecycle(t *testing.T) {
 	tr := Transfer{Status: TransferRequested}
 
-	if _, err := Apply(&tr, Listing{}, Step{Action: "collect", ConfirmedKg: 5, Counterfactual: "landfill"}); !errors.Is(err, ErrConflict) {
+	if _, err := Apply(&tr, Listing{}, Step{Action: "collect", ConfirmedKg: 5}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("collect before accept: got %v, want conflict", err)
 	}
 
@@ -20,17 +19,14 @@ func TestApplyLifecycle(t *testing.T) {
 		t.Fatalf("accept: status=%s listing=%s err=%v", tr.Status, ls, err)
 	}
 
-	if _, err := Apply(&tr, Listing{}, Step{Action: "collect", ConfirmedKg: 0, Counterfactual: "landfill"}); !errors.Is(err, ErrInvalid) {
+	if _, err := Apply(&tr, Listing{}, Step{Action: "collect", ConfirmedKg: 0}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("collect without weight: got %v, want invalid", err)
 	}
-	if _, err := Apply(&tr, Listing{}, Step{Action: "collect", ConfirmedKg: 4, Counterfactual: "maybe"}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("collect with unknown counterfactual: got %v, want invalid", err)
-	}
-	if _, err := Apply(&tr, Listing{}, Step{Action: "collect", ConfirmedKg: 4.5, Counterfactual: "landfill"}); err != nil {
+	if _, err := Apply(&tr, Listing{}, Step{Action: "collect", ConfirmedKg: 4.5}); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	if tr.ConfirmedKg != 4.5 || tr.Counterfactual != "landfill" {
-		t.Fatalf("collect did not record weight and counterfactual: %+v", tr)
+	if tr.ConfirmedKg != 4.5 {
+		t.Fatalf("collect did not record the weight: %+v", tr)
 	}
 
 	ls, err = Apply(&tr, Listing{}, Step{Action: "outcome", Outcome: "reused", OutcomeNote: "  shelves  "})
@@ -90,64 +86,61 @@ func TestRankPrefersMaterialQuantityAndArea(t *testing.T) {
 	}
 }
 
-func TestImpactCountsOnlyDivertedCompletedWeight(t *testing.T) {
+func TestTotalsCountOnlyCompletedHandOvers(t *testing.T) {
 	listings := map[string]Listing{
-		"w": {ID: "w", Material: "wood"},
-		"p": {ID: "p", Material: "paper"},
+		"w": {ID: "w", OwnerID: "ann", Material: "wood"},
+		"m": {ID: "m", OwnerID: "bo", Material: "electronics", Pieces: 12},
 	}
 	transfers := []Transfer{
-		{ListingID: "w", Status: TransferCompleted, ConfirmedKg: 10, Counterfactual: "dumped_burned", Outcome: "reused"},
-		{ListingID: "p", Status: TransferCompleted, ConfirmedKg: 8, Counterfactual: "storage", Outcome: "reused"},
-		{ListingID: "w", Status: TransferCollected, ConfirmedKg: 50, Counterfactual: "landfill"},
-		{ListingID: "w", Status: TransferFailed},
+		{ListingID: "w", ReceiverID: "bo", Status: TransferCompleted, ConfirmedKg: 10, Outcome: "reused"},
+		{ListingID: "m", ReceiverID: "ann", Status: TransferCompleted, ConfirmedPieces: 4, Outcome: "reused"},
+		{ListingID: "w", ReceiverID: "cy", Status: TransferCollected, ConfirmedKg: 50},
+		{ListingID: "w", ReceiverID: "cy", Status: TransferFailed},
 	}
-	imp := ComputeImpact(transfers, listings)
-	if imp.Completed != 2 || imp.Failed != 1 || imp.InProgress != 1 {
-		t.Fatalf("counts: %+v", imp)
+	all := ComputeTotals(transfers, listings, "")
+	if all.HandedOn != (Amount{Kg: 10, Pieces: 4, HandOvers: 2}) || all.InProgress != 1 {
+		t.Fatalf("community totals: %+v", all)
 	}
-	if imp.HandedKg != 18 || imp.DivertedKg != 10 {
-		t.Fatalf("handed=%v diverted=%v, want 18 and 10", imp.HandedKg, imp.DivertedKg)
-	}
-	wood, _ := MaterialByID("wood")
-	if math.Abs(imp.KgCO2e-10*wood.FactorKgCO2e) > 1e-9 {
-		t.Fatalf("kgCO2e=%v", imp.KgCO2e)
-	}
-	if math.Abs(imp.CompletionRate-2.0/3.0) > 1e-9 {
-		t.Fatalf("completion rate=%v", imp.CompletionRate)
+	ann := ComputeTotals(transfers, listings, "ann")
+	if ann.Given != (Amount{Kg: 10, HandOvers: 1}) || ann.Claimed != (Amount{Pieces: 4, HandOvers: 1}) {
+		t.Fatalf("ann gave %+v and claimed %+v", ann.Given, ann.Claimed)
 	}
 }
 
-func TestCollectCountedItems(t *testing.T) {
-	l := Listing{Pieces: 10, EstKg: 45}
+func TestCollectInTheListingsUnit(t *testing.T) {
+	l := Listing{Pieces: 10}
 	tr := Transfer{Status: TransferAccepted}
-	if _, err := Apply(&tr, l, Step{Action: "collect", Counterfactual: "storage"}); !errors.Is(err, ErrInvalid) {
+	if _, err := Apply(&tr, l, Step{Action: "collect"}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("collect without a count: got %v, want invalid", err)
 	}
-	if _, err := Apply(&tr, l, Step{Action: "collect", Pieces: 11, Counterfactual: "storage"}); !errors.Is(err, ErrInvalid) {
+	if _, err := Apply(&tr, l, Step{Action: "collect", Pieces: 11}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("collect more pieces than listed: got %v, want invalid", err)
 	}
-	// No weight: estimated from 4.5 kg per piece.
-	if _, err := Apply(&tr, l, Step{Action: "collect", Pieces: 4, Counterfactual: "landfill"}); err != nil {
+	if _, err := Apply(&tr, l, Step{Action: "collect", Pieces: 4}); err != nil {
 		t.Fatal(err)
 	}
-	if tr.ConfirmedPieces != 4 || tr.ConfirmedKg != 18 || !tr.KgEstimated {
-		t.Fatalf("estimated collect: %+v", tr)
+	if tr.ConfirmedPieces != 4 || tr.ConfirmedKg != 0 {
+		t.Fatalf("counted collect: %+v", tr)
 	}
-	// A weight from the scale wins over the estimate.
-	tr = Transfer{Status: TransferAccepted}
-	if _, err := Apply(&tr, l, Step{Action: "collect", Pieces: 4, ConfirmedKg: 16.2, Counterfactual: "landfill"}); err != nil {
-		t.Fatal(err)
+}
+
+func TestValidateListingUnits(t *testing.T) {
+	base := Listing{ProviderName: "A", Item: "Monitors", Material: "electronics", Route: RouteReuse, Area: "Kabwata"}
+	counted := base
+	counted.Pieces, counted.EstKg = 12, 50
+	if err := ValidateListing(&counted); err != nil || counted.EstKg != 0 {
+		t.Fatalf("counted listing: %+v %v", counted, err)
 	}
-	if tr.ConfirmedKg != 16.2 || tr.KgEstimated {
-		t.Fatalf("weighed collect: %+v", tr)
+	if err := ValidateListing(&base); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("listing with no amount: got %v, want invalid", err)
 	}
 }
 
 func TestRankByPieces(t *testing.T) {
 	now := time.Now()
 	ls := []Listing{
-		{ID: "few", Material: "electronics", Pieces: 3, EstKg: 13, Route: RouteReuse, Area: "Kabwata", Status: ListingOpen, CreatedAt: now},
-		{ID: "many", Material: "electronics", Pieces: 12, EstKg: 54, Route: RouteReuse, Area: "Kabwata", Status: ListingOpen, CreatedAt: now.Add(-time.Hour)},
+		{ID: "few", Material: "electronics", Pieces: 3, Route: RouteReuse, Area: "Kabwata", Status: ListingOpen, CreatedAt: now},
+		{ID: "many", Material: "electronics", Pieces: 12, Route: RouteReuse, Area: "Kabwata", Status: ListingOpen, CreatedAt: now.Add(-time.Hour)},
 		{ID: "bulk", Material: "electronics", EstKg: 80, Route: RouteReuse, Area: "Kabwata", Status: ListingOpen, CreatedAt: now.Add(-2 * time.Hour)},
 	}
 	got := Rank(ls, Need{Material: "electronics", Pieces: 10, Area: "Kabwata"})
@@ -187,5 +180,24 @@ func TestValidateNeed(t *testing.T) {
 	}
 	if err := ValidateNeed(&SavedNeed{Material: "wood", Kg: 5, Pieces: 2}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("need in kg and pieces: got %v, want invalid", err)
+	}
+}
+
+func TestRecordsListCompletedHandOvers(t *testing.T) {
+	listings := map[string]Listing{
+		"w": {ID: "w", Material: "wood", Item: "Offcuts", Area: "Kabwata"},
+		"e": {ID: "e", Material: "electronics", Item: "Monitors", Area: "Chilenje", Pieces: 12},
+	}
+	transfers := []Transfer{
+		{ID: "1", ListingID: "w", Status: TransferCompleted, ConfirmedKg: 10, Outcome: "reused"},
+		{ID: "2", ListingID: "e", Status: TransferCompleted, ConfirmedPieces: 10, Outcome: "repaired"},
+		{ID: "3", ListingID: "w", Status: TransferCollected, ConfirmedKg: 50},
+	}
+	recs := Records(transfers, listings)
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want only the 2 completed", len(recs))
+	}
+	if recs[1].Pieces != 10 || recs[1].Outcome != "Repaired or repurposed" {
+		t.Fatalf("monitor record: %+v", recs[1])
 	}
 }
