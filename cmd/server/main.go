@@ -13,7 +13,6 @@ import (
 
 	"github.com/KeKe45/resourcelocate/internal/api"
 	"github.com/KeKe45/resourcelocate/internal/store"
-	"github.com/KeKe45/resourcelocate/internal/vision"
 	"github.com/KeKe45/resourcelocate/internal/webui"
 )
 
@@ -35,17 +34,21 @@ func main() {
 	}
 	defer st.Close()
 
-	// Photo reading is optional: without a key the server still runs and the
-	// Give screen falls back to the manual form.
-	var reader *vision.Reader
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		reader = vision.New(key, env("CLAUDE_MODEL", "claude-opus-5-5"))
-	} else {
-		log.Print("ANTHROPIC_API_KEY not set: photo-to-listing is off, the manual form still works")
+	// TRUST_PROXY=1 when running behind a proxy that sets X-Forwarded-For
+	// (Render, Fly.io), so rate limits apply per visitor, not per proxy.
+	srvAPI := api.New(st, os.Getenv("TRUST_PROXY") == "1")
+	// DEMO_LOGINS=1 adds one-click demo giver and seeker logins, for judges.
+	if os.Getenv("DEMO_LOGINS") == "1" {
+		if err := srvAPI.EnableDemoLogins(context.Background()); err != nil {
+			log.Fatalf("demo logins: %v", err)
+		}
+		log.Print("demo logins are on")
 	}
 
 	mux := http.NewServeMux()
-	api.New(st, reader).Routes(mux)
+	srvAPI.Routes(mux)
+	// A listing's share link: the app, with link-preview tags for that listing.
+	mux.Handle("GET /l/{id}", srvAPI.SharePage(webui.Index()))
 	mux.Handle("/", webui.Handler())
 
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}

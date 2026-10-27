@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, photoUrl } from "../api";
 import { ago, amount as describeAmount, roleLabels, useLabels, useMeta, useUser } from "../meta";
 import type { Listing, Match } from "../types";
 import { RouteChip } from "../components/bits";
@@ -127,6 +127,8 @@ export default function FindView({ version, onChanged }: Props) {
           {matches?.map((m, i) => (
             <li key={m.listing.id}>
               <button className="card listing" onClick={() => setOpen(m.listing)}>
+                {m.listing.photos > 0 && <img className="thumb" src={photoUrl(m.listing.id)} alt="" loading="lazy" />}
+                <div className="listing-body">
                 <div className="listing-top">
                   <span className="eyebrow">{labels.material(m.listing.material)}</span>
                   {hasNeed && (
@@ -144,6 +146,7 @@ export default function FindView({ version, onChanged }: Props) {
                   <RouteChip route={m.listing.route} />
                   {hasNeed && m.reasons?.map((r) => <span key={r} className="reason">{r}</span>)}
                   <span className="when">{ago(m.listing.createdAt)}</span>
+                </div>
                 </div>
               </button>
             </li>

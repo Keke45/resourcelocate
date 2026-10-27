@@ -10,53 +10,68 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/KeKe45/resourcelocate/internal/auth"
 	"github.com/KeKe45/resourcelocate/internal/domain"
 	"github.com/KeKe45/resourcelocate/internal/store"
-	"github.com/KeKe45/resourcelocate/internal/vision"
 )
 
-const maxPhotoBytes = 8 << 20
+// maxListingPhotoBytes caps stored photos. The browser shrinks photos to
+// about 1280 px before upload, which is far below this.
+const maxListingPhotoBytes = 2 << 20
 
 type Server struct {
 	store  *store.Store
-	vision *vision.Reader // nil when no API key is configured
+	limits *limits
 	// dummyHash is checked when a login email is unknown, so a wrong email
 	// takes as long as a wrong password and does not reveal who has an account.
 	dummyHash string
+	// demo holds the shared demo accounts by key ("giver", "seeker"); empty
+	// unless EnableDemoLogins was called.
+	demo map[string]domain.User
 }
 
-func New(s *store.Store, v *vision.Reader) *Server {
+// New returns the API server. trustProxy says whether to take the client's
+// IP from X-Forwarded-For, which is only safe behind a proxy that sets it.
+func New(s *store.Store, trustProxy bool) *Server {
 	h, err := auth.HashPassword("not a real password")
 	if err != nil {
 		panic(err)
 	}
-	return &Server{store: s, vision: v, dummyHash: h}
+	return &Server{store: s, limits: newLimits(trustProxy), dummyHash: h}
 }
 
 // Routes registers every API endpoint on mux. Endpoints wrapped in
-// s.signedIn need a session cookie; the rest are public.
+// s.signedIn need a session cookie; the rest are public. Every endpoint is
+// rate limited per client IP, and the ones that check a password (wrapped
+// in s.authLimited) much more tightly.
 func (s *Server) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/meta", s.meta)
-	mux.HandleFunc("GET /api/stats", s.stats)
-	mux.HandleFunc("POST /api/auth/signup", s.signup)
-	mux.HandleFunc("POST /api/auth/login", s.login)
-	mux.HandleFunc("POST /api/auth/logout", s.logout)
-	mux.HandleFunc("GET /api/me", s.signedIn(s.me))
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/meta", s.meta)
+	api.HandleFunc("GET /api/stats", s.stats)
+	api.HandleFunc("POST /api/auth/signup", s.authLimited(s.signup))
+	api.HandleFunc("POST /api/auth/login", s.authLimited(s.login))
+	api.HandleFunc("POST /api/auth/logout", s.logout)
+	api.HandleFunc("POST /api/auth/demo", s.authLimited(s.demoLogin))
+	api.HandleFunc("GET /api/records.csv", s.records)
+	api.HandleFunc("GET /api/me", s.signedIn(s.me))
+	api.HandleFunc("PUT /api/me", s.signedIn(s.updateProfile))
+	api.HandleFunc("POST /api/me/password", s.authLimited(s.signedIn(s.changePassword)))
 
-	mux.HandleFunc("GET /api/dashboard", s.signedIn(s.dashboard))
-	mux.HandleFunc("POST /api/listings", s.signedIn(s.createListing))
-	mux.HandleFunc("POST /api/listings/draft", s.signedIn(s.draftFromPhoto))
-	mux.HandleFunc("POST /api/listings/{id}/withdraw", s.signedIn(s.withdrawListing))
-	mux.HandleFunc("GET /api/matches", s.signedIn(s.matches))
-	mux.HandleFunc("GET /api/needs", s.signedIn(s.needs))
-	mux.HandleFunc("POST /api/needs", s.signedIn(s.createNeed))
-	mux.HandleFunc("POST /api/needs/{id}/close", s.signedIn(s.closeNeed))
-	mux.HandleFunc("GET /api/transfers", s.signedIn(s.transfers))
-	mux.HandleFunc("POST /api/transfers", s.signedIn(s.requestListing))
-	mux.HandleFunc("POST /api/transfers/{id}/{action}", s.signedIn(s.advance))
+	api.HandleFunc("GET /api/dashboard", s.signedIn(s.dashboard))
+	api.HandleFunc("POST /api/listings", s.signedIn(s.createListing))
+	api.HandleFunc("POST /api/listings/{id}/withdraw", s.signedIn(s.withdrawListing))
+	api.HandleFunc("POST /api/listings/{id}/photos", s.signedIn(s.uploadPhoto))
+	api.HandleFunc("GET /api/listings/{id}/photos/{n}", s.photo)
+	api.HandleFunc("GET /api/public/listings/{id}", s.publicListing)
+	api.HandleFunc("GET /api/matches", s.signedIn(s.matches))
+	api.HandleFunc("GET /api/needs", s.signedIn(s.needs))
+	api.HandleFunc("POST /api/needs", s.signedIn(s.createNeed))
+	api.HandleFunc("POST /api/needs/{id}/close", s.signedIn(s.closeNeed))
+	api.HandleFunc("GET /api/transfers", s.signedIn(s.transfers))
+	api.HandleFunc("POST /api/transfers", s.signedIn(s.requestListing))
+	api.HandleFunc("POST /api/transfers/{id}/{action}", s.signedIn(s.advance))
+	mux.Handle("/api/", s.limited(api))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 }
 
@@ -190,6 +205,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// Also limit by account, so guessing one password from many IPs is slow too.
+	if !s.limits.allow(w, s.limits.account, "login:"+domain.NormalizeEmail(in.Email)) {
+		return
+	}
 	u, hash, err := s.store.UserByEmail(r.Context(), in.Email)
 	if errors.Is(err, store.ErrNotFound) {
 		auth.CheckPassword(s.dummyHash, in.Password)
@@ -227,13 +246,13 @@ func (s *Server) me(w http.ResponseWriter, _ *http.Request, u domain.User) {
 // meta returns the catalog the front end needs to build its forms and labels.
 func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"materials":       domain.Materials,
-		"routes":          domain.Routes,
-		"areas":           domain.Areas,
-		"roles":           domain.Roles,
-		"counterfactuals": domain.Counterfactuals,
-		"outcomes":        domain.Outcomes,
-		"photoReading":    s.vision != nil,
+		"materials":  domain.Materials,
+		"routes":     domain.Routes,
+		"areas":      domain.Areas,
+		"roles":      domain.Roles,
+		"outcomes":   domain.Outcomes,
+		"maxPhotos":  domain.MaxPhotos,
+		"demoLogins": len(s.demo) > 0,
 	})
 }
 
@@ -264,7 +283,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"openListings": open,
 		"openNeeds":    len(needs),
-		"impact":       domain.ComputeImpact(ts, byID(ls)),
+		"totals":       domain.ComputeTotals(ts, byID(ls), ""),
 	})
 }
 
@@ -322,42 +341,56 @@ func (s *Server) withdrawListing(w http.ResponseWriter, r *http.Request, u domai
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// draftFromPhoto reads an uploaded photo with Claude and returns a draft
-// listing. It saves nothing: the giver still reviews and submits the form.
-func (s *Server) draftFromPhoto(w http.ResponseWriter, r *http.Request, _ domain.User) {
-	if s.vision == nil {
-		writeMsg(w, http.StatusServiceUnavailable, "Photo reading is off on this server. Fill in the form by hand.")
+// uploadPhoto adds a reference photo to one of the user's listings, so
+// people looking can see what it is. The body is the image itself; only
+// JPEG, PNG and WebP are kept.
+func (s *Server) uploadPhoto(w http.ResponseWriter, r *http.Request, u domain.User) {
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxListingPhotoBytes+1))
+	if err != nil || len(data) == 0 || len(data) > maxListingPhotoBytes {
+		writeMsg(w, http.StatusBadRequest, "Attach a photo under 2 MB.")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+1<<20)
-	file, hdr, err := r.FormFile("photo")
-	if err != nil {
-		writeMsg(w, http.StatusBadRequest, "Attach a photo under 8 MB.")
-		return
-	}
-	defer file.Close()
-	img, err := io.ReadAll(io.LimitReader(file, maxPhotoBytes+1))
-	if err != nil || len(img) > maxPhotoBytes {
-		writeMsg(w, http.StatusBadRequest, "Attach a photo under 8 MB.")
-		return
-	}
-	mediaType := http.DetectContentType(img)
-	switch mediaType {
-	case "image/jpeg", "image/png", "image/gif", "image/webp":
+	ct := http.DetectContentType(data)
+	switch ct {
+	case "image/jpeg", "image/png", "image/webp":
 	default:
-		log.Printf("draft: rejected %s (%s)", hdr.Filename, mediaType)
-		writeMsg(w, http.StatusBadRequest, "Use a JPEG, PNG, WebP or GIF photo.")
+		writeMsg(w, http.StatusBadRequest, "Use a JPEG, PNG or WebP photo.")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-	d, err := s.vision.Read(ctx, mediaType, img)
+	n, err := s.store.AddPhoto(r.Context(), u.ID, r.PathValue("id"), ct, data)
 	if err != nil {
-		log.Printf("draft: %v", err)
-		writeMsg(w, http.StatusBadGateway, "The photo could not be read just now. Fill in the form by hand or try another photo.")
+		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	writeJSON(w, http.StatusCreated, map[string]int{"n": n})
+}
+
+// photo serves one of a listing's photos. Photos are public, like the
+// listing's share page, so link previews in chat apps can show them; a
+// withdrawn listing's photos are not served.
+func (s *Server) photo(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil {
+		writeErr(w, store.ErrNotFound)
+		return
+	}
+	l, err := s.store.Listing(r.Context(), r.PathValue("id"))
+	if err == nil && l.Status == domain.ListingWithdrawn {
+		err = store.ErrNotFound
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	ct, data, err := s.store.Photo(r.Context(), l.ID, n)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Write(data)
 }
 
 // ---- Matching and needs ----
@@ -464,7 +497,7 @@ type transferView struct {
 	Contact      string `json:"contact"`
 	Area         string `json:"area"`
 	// The listing's pieces and estimated weight, so the hand-over form can
-	// ask for a count and show the per-piece estimate.
+	// ask for the amount in the listing's unit.
 	ListingPieces int     `json:"listingPieces"`
 	ListingEstKg  float64 `json:"listingEstKg"`
 	// Side is "giving" when the user listed the material, "receiving" when
@@ -560,8 +593,8 @@ func (s *Server) advance(w http.ResponseWriter, r *http.Request, u domain.User) 
 // ---- Dashboard ----
 
 // dashboard returns everything the signed-in user's home screen shows:
-// their listings, saved needs with live matches, hand-overs, and the impact
-// of the hand-overs they took part in.
+// their listings, saved needs with live matches, hand-overs, and how much
+// they have given and claimed.
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, u domain.User) {
 	ctx := r.Context()
 	listings, err := s.store.ListingsBy(ctx, u.ID)
@@ -588,6 +621,6 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, u domain.User
 		"listings":  listings,
 		"needs":     needs,
 		"transfers": views,
-		"impact":    domain.ComputeImpact(ts, byID(all)),
+		"totals":    domain.ComputeTotals(ts, byID(all), u.ID),
 	})
 }

@@ -41,10 +41,8 @@ func ValidateSignup(s *Signup) error {
 		return invalidf("add your name or your organisation's name")
 	case !validEmail(s.Email):
 		return invalidf("enter a valid email address")
-	case len(s.Password) < MinPasswordLen:
-		return invalidf("use a password of at least %d characters", MinPasswordLen)
-	case len(s.Password) > 200:
-		return invalidf("that password is too long")
+	case ValidatePassword(s.Password) != nil:
+		return ValidatePassword(s.Password)
 	case !ValidRole(s.Role):
 		return invalidf("choose who you are")
 	case !ValidArea(s.Area):
@@ -59,4 +57,27 @@ func validEmail(s string) bool {
 	}
 	a, err := mail.ParseAddress(s)
 	return err == nil && a.Address == s && strings.Contains(s[strings.LastIndex(s, "@"):], ".")
+}
+
+// ValidateProfile trims and checks the fields a user can change in Settings.
+func ValidateProfile(name, area *string) error {
+	*name = strings.TrimSpace(*name)
+	switch {
+	case *name == "" || len(*name) > 80:
+		return invalidf("add your name or your organisation's name")
+	case !ValidArea(*area):
+		return invalidf("choose your area")
+	}
+	return nil
+}
+
+// ValidatePassword checks a new password.
+func ValidatePassword(pw string) error {
+	switch {
+	case len(pw) < MinPasswordLen:
+		return invalidf("use a password of at least %d characters", MinPasswordLen)
+	case len(pw) > 200:
+		return invalidf("that password is too long")
+	}
+	return nil
 }

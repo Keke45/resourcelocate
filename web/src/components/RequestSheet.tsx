@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { ago, amount, roleLabels, useLabels, useMeta, useUser } from "../meta";
+import { ago, amount, pcs, roleLabels, useLabels, useMeta, useUser } from "../meta";
 import type { Listing } from "../types";
-import { RouteChip } from "./bits";
+import { Gallery, RouteChip } from "./bits";
+import { ShareButton } from "./share";
 
 type Props = {
   listing: Listing;
@@ -54,11 +55,16 @@ export default function RequestSheet({ listing, onClose, onRequested }: Props) {
             <p className="eyebrow">{labels.material(listing.material)}</p>
             <h2 id="sheet-title">{listing.item}</h2>
           </div>
-          <button className="icon-btn" onClick={onClose} aria-label="Close">×</button>
+          <div className="sheet-tools">
+            <ShareButton listing={listing} />
+            <button className="icon-btn" onClick={onClose} aria-label="Close">×</button>
+          </div>
         </header>
 
+        <Gallery id={listing.id} photos={listing.photos} item={listing.item} />
+
         <dl className="facts">
-          <div><dt>Amount</dt><dd>{listing.quantity && <>{listing.quantity} <span className="muted">·</span></>} <span className="muted">{listing.pieces > 0 ? amount(listing) : `about ${amount(listing)}`}</span></dd></div>
+          <div><dt>Amount</dt><dd>{listing.quantity && listing.quantity !== pcs(listing.pieces) && <>{listing.quantity} <span className="muted">·</span></>} <span className="muted">{amount(listing)}</span></dd></div>
           <div><dt>Condition</dt><dd>{listing.condition || "—"}</dd></div>
           <div><dt>From</dt><dd>{listing.providerName}, {listing.area}</dd></div>
           <div><dt>Route</dt><dd><RouteChip route={listing.route} /></dd></div>

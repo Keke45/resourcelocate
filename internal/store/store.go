@@ -52,9 +52,18 @@ CREATE TABLE IF NOT EXISTS listings (
 	area          TEXT NOT NULL,
 	notes         TEXT NOT NULL DEFAULT '',
 	status        TEXT NOT NULL,
+	photo_count   INTEGER NOT NULL DEFAULT 0,
 	created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS listings_owner ON listings(owner_id);
+CREATE TABLE IF NOT EXISTS listing_photos (
+	listing_id   TEXT NOT NULL REFERENCES listings(id),
+	n            INTEGER NOT NULL,
+	content_type TEXT NOT NULL,
+	data         BLOB NOT NULL,
+	created_at   TEXT NOT NULL,
+	PRIMARY KEY (listing_id, n)
+);
 CREATE TABLE IF NOT EXISTS needs (
 	id         TEXT PRIMARY KEY,
 	user_id    TEXT NOT NULL REFERENCES users(id),
@@ -77,8 +86,6 @@ CREATE TABLE IF NOT EXISTS transfers (
 	status           TEXT NOT NULL,
 	confirmed_kg     REAL NOT NULL DEFAULT 0,
 	confirmed_pieces INTEGER NOT NULL DEFAULT 0,
-	kg_estimated     INTEGER NOT NULL DEFAULT 0,
-	counterfactual   TEXT NOT NULL DEFAULT '',
 	outcome          TEXT NOT NULL DEFAULT '',
 	outcome_note     TEXT NOT NULL DEFAULT '',
 	created_at       TEXT NOT NULL,
@@ -100,7 +107,35 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate brings databases made by earlier versions up to date. Earlier
+// versions kept one photo per listing in a photos table and flagged it with
+// has_photo; now a listing has up to domain.MaxPhotos in listing_photos.
+// Each step tolerates having run before.
+func migrate(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE listings ADD COLUMN photo_count INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	if err == nil {
+		// The column is new, so this database may hold old single photos.
+		_, err = db.Exec(`INSERT OR IGNORE INTO listing_photos (listing_id, n, content_type, data, created_at)
+			SELECT listing_id, 0, content_type, data, created_at FROM photos`)
+		if err != nil && !strings.Contains(err.Error(), "no such table") {
+			return err
+		}
+		_, err = db.Exec(`UPDATE listings SET photo_count = (SELECT COUNT(*) FROM listing_photos p WHERE p.listing_id = listings.id)`)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -131,13 +166,13 @@ func prefixed(alias, cols string) string {
 
 // ---- Listings ----
 
-const listingCols = `id, owner_id, provider_name, contact, item, material, quantity, pieces, est_kg, condition, route, area, notes, status, created_at`
+const listingCols = `id, owner_id, provider_name, contact, item, material, quantity, pieces, est_kg, condition, route, area, notes, status, photo_count, created_at`
 
 func scanListing(r scanner) (domain.Listing, error) {
 	var l domain.Listing
 	var created string
 	err := r.Scan(&l.ID, &l.OwnerID, &l.ProviderName, &l.Contact, &l.Item, &l.Material, &l.Quantity, &l.Pieces, &l.EstKg,
-		&l.Condition, &l.Route, &l.Area, &l.Notes, &l.Status, &created)
+		&l.Condition, &l.Route, &l.Area, &l.Notes, &l.Status, &l.Photos, &created)
 	l.CreatedAt = parseTS(created)
 	return l, err
 }
@@ -189,9 +224,9 @@ func (s *Store) CreateListing(ctx context.Context, l *domain.Listing) error {
 	if l.Status == "" {
 		l.Status = domain.ListingOpen
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO listings (`+listingCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO listings (`+listingCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, l.OwnerID, l.ProviderName, l.Contact, l.Item, l.Material, l.Quantity, l.Pieces, l.EstKg, l.Condition,
-		l.Route, l.Area, l.Notes, l.Status, ts(l.CreatedAt))
+		l.Route, l.Area, l.Notes, l.Status, l.Photos, ts(l.CreatedAt))
 	return err
 }
 
@@ -225,6 +260,51 @@ func (s *Store) WithdrawListing(ctx context.Context, userID, id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// AddPhoto attaches a reference photo to one of userID's listings and
+// returns its number. A listing holds at most domain.MaxPhotos.
+func (s *Store) AddPhoto(ctx context.Context, userID, listingID, contentType string, data []byte) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var owner string
+	var n int
+	err = tx.QueryRowContext(ctx, `SELECT owner_id, photo_count FROM listings WHERE id = ?`, listingID).Scan(&owner, &n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	} else if err != nil {
+		return 0, err
+	}
+	if owner != userID {
+		return 0, fmt.Errorf("%w: only the person who listed this material can add photos to it", domain.ErrForbidden)
+	}
+	if n >= domain.MaxPhotos {
+		return 0, fmt.Errorf("%w: a listing can have up to %d photos", domain.ErrConflict, domain.MaxPhotos)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO listing_photos (listing_id, n, content_type, data, created_at) VALUES (?,?,?,?,?)`,
+		listingID, n, contentType, data, ts(time.Now().UTC()))
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE listings SET photo_count = ? WHERE id = ?`, n+1, listingID); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
+}
+
+// Photo returns photo n of a listing and its content type.
+func (s *Store) Photo(ctx context.Context, listingID string, n int) (string, []byte, error) {
+	var ct string
+	var data []byte
+	err := s.db.QueryRowContext(ctx, `SELECT content_type, data FROM listing_photos WHERE listing_id = ? AND n = ?`,
+		listingID, n).Scan(&ct, &data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, ErrNotFound
+	}
+	return ct, data, err
 }
 
 // ---- Needs ----
@@ -289,13 +369,13 @@ func (s *Store) CloseNeed(ctx context.Context, userID, id string) error {
 
 // ---- Transfers ----
 
-const transferCols = `id, listing_id, receiver_id, receiver_name, receiver_role, intended_use, status, confirmed_kg, confirmed_pieces, kg_estimated, counterfactual, outcome, outcome_note, created_at, updated_at`
+const transferCols = `id, listing_id, receiver_id, receiver_name, receiver_role, intended_use, status, confirmed_kg, confirmed_pieces, outcome, outcome_note, created_at, updated_at`
 
 func scanTransfer(r scanner) (domain.Transfer, error) {
 	var t domain.Transfer
 	var created, updated string
 	err := r.Scan(&t.ID, &t.ListingID, &t.ReceiverID, &t.ReceiverName, &t.ReceiverRole, &t.IntendedUse, &t.Status,
-		&t.ConfirmedKg, &t.ConfirmedPieces, &t.KgEstimated, &t.Counterfactual, &t.Outcome, &t.OutcomeNote, &created, &updated)
+		&t.ConfirmedKg, &t.ConfirmedPieces, &t.Outcome, &t.OutcomeNote, &created, &updated)
 	t.CreatedAt, t.UpdatedAt = parseTS(created), parseTS(updated)
 	return t, err
 }
@@ -365,9 +445,9 @@ func (s *Store) RequestListing(ctx context.Context, t *domain.Transfer) error {
 	t.ID = NewID()
 	t.Status = domain.TransferRequested
 	t.CreatedAt, t.UpdatedAt = now, now
-	_, err = tx.ExecContext(ctx, `INSERT INTO transfers (`+transferCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = tx.ExecContext(ctx, `INSERT INTO transfers (`+transferCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.ListingID, t.ReceiverID, t.ReceiverName, t.ReceiverRole, t.IntendedUse, t.Status, t.ConfirmedKg,
-		t.ConfirmedPieces, t.KgEstimated, t.Counterfactual, t.Outcome, t.OutcomeNote, ts(t.CreatedAt), ts(t.UpdatedAt))
+		t.ConfirmedPieces, t.Outcome, t.OutcomeNote, ts(t.CreatedAt), ts(t.UpdatedAt))
 	if err != nil {
 		return err
 	}
@@ -402,8 +482,8 @@ func (s *Store) Advance(ctx context.Context, actorID, id string, step domain.Ste
 		return t, err
 	}
 	t.UpdatedAt = time.Now().UTC()
-	_, err = tx.ExecContext(ctx, `UPDATE transfers SET status=?, confirmed_kg=?, confirmed_pieces=?, kg_estimated=?, counterfactual=?, outcome=?, outcome_note=?, updated_at=? WHERE id=?`,
-		t.Status, t.ConfirmedKg, t.ConfirmedPieces, t.KgEstimated, t.Counterfactual, t.Outcome, t.OutcomeNote, ts(t.UpdatedAt), t.ID)
+	_, err = tx.ExecContext(ctx, `UPDATE transfers SET status=?, confirmed_kg=?, confirmed_pieces=?, outcome=?, outcome_note=?, updated_at=? WHERE id=?`,
+		t.Status, t.ConfirmedKg, t.ConfirmedPieces, t.Outcome, t.OutcomeNote, ts(t.UpdatedAt), t.ID)
 	if err != nil {
 		return t, err
 	}

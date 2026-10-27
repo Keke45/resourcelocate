@@ -1,19 +1,20 @@
 // Shapes of the JSON the Go API returns. Keep in sync with internal/domain.
 
 // Catalog entries, served once by GET /api/meta.
-export type Material = { id: string; label: string; factorKgCO2e: number; examples: string };
+export type Material = { id: string; label: string; examples: string };
 export type Route = { id: string; label: string; description: string; recyclersOnly: boolean };
-export type Counterfactual = { id: string; label: string; diverted: boolean };
 export type Outcome = { id: string; label: string };
 
 export type Meta = {
   materials: Material[];
   routes: Route[];
   areas: string[];
-  counterfactuals: Counterfactual[];
   outcomes: Outcome[];
   roles: Role[];
-  photoReading: boolean;
+  // How many reference photos a listing can carry.
+  maxPhotos: number;
+  // True when the server offers one-click demo logins for judges.
+  demoLogins: boolean;
 };
 
 export type User = { id: string; name: string; email: string; role: Role; area: string; createdAt: string };
@@ -31,7 +32,8 @@ export type Listing = {
   item: string;
   material: string;
   quantity: string;
-  // Number of items for counted things (monitors, desks); 0 = by weight only.
+  // Counted things (monitors, desks) set pieces; bulk material sets estKg
+  // (estimated total weight). Only one of the two is non-zero.
   pieces: number;
   estKg: number;
   condition: string;
@@ -39,6 +41,8 @@ export type Listing = {
   area: string;
   notes: string;
   status: ListingStatus;
+  // Number of reference photos; see photoUrl.
+  photos: number;
   createdAt: string;
 };
 
@@ -60,9 +64,6 @@ export type Transfer = {
   status: TransferStatus;
   confirmedKg: number;
   confirmedPieces: number;
-  // True when confirmedKg comes from the per-piece estimate, not a scale.
-  kgEstimated: boolean;
-  counterfactual: string;
   outcome: string;
   outcomeNote: string;
   createdAt: string;
@@ -80,40 +81,18 @@ export type Transfer = {
   side: "giving" | "receiving";
 };
 
-export type Draft = {
-  item: string;
-  material: string;
-  quantity: string;
-  pieces: number;
-  estKg: number;
-  condition: string;
-  route: string;
-  hazardous: boolean;
-  hazardReason: string;
-  confidence: "low" | "medium" | "high";
-};
+// How much changed hands: weight for bulk material, pieces for counted
+// items, and the number of finished hand-overs.
+export type Amount = { kg: number; pieces: number; handOvers: number };
 
-export type MaterialImpact = {
-  material: string;
-  label: string;
-  handedKg: number;
-  divertedKg: number;
-  kgCO2e: number;
-  pieces: number;
-};
-
-export type Impact = {
-  completed: number;
-  failed: number;
+// Totals count only finished hand-overs. given and claimed split them by
+// side for the signed-in user; both are zero in community totals.
+export type Totals = {
+  handedOn: Amount;
+  given: Amount;
+  claimed: Amount;
   inProgress: number;
-  completionRate: number;
-  handedKg: number;
-  divertedKg: number;
-  kgCO2e: number;
-  pieces: number;
-  estimatedKg: number;
-  byMaterial: MaterialImpact[];
-  byOutcome: Record<string, number>;
+  byMaterial: (Amount & { material: string; label: string })[];
 };
 
 // A search saved on the user's account, with matches worked out fresh on
@@ -134,7 +113,7 @@ export type Dashboard = {
   listings: Listing[];
   needs: NeedView[];
   transfers: Transfer[];
-  impact: Impact;
+  totals: Totals;
 };
 
-export type Stats = { openListings: number; openNeeds: number; impact: Impact };
+export type Stats = { openListings: number; openNeeds: number; totals: Totals };

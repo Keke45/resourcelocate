@@ -55,10 +55,14 @@ func Rank(listings []Listing, n Need) []Match {
 		case want <= 0:
 			score += weightQuantity
 		case have <= 0:
-			// Asked for pieces but the listing is by weight only: we cannot
-			// tell, so give half marks rather than hide it.
+			// The listing is measured in the other unit (weight vs pieces):
+			// we cannot compare, so give half marks rather than hide it.
 			score += weightQuantity / 2
-			reasons = append(reasons, "sold by weight")
+			if n.Pieces > 0 {
+				reasons = append(reasons, "sold by weight")
+			} else {
+				reasons = append(reasons, "counted in pieces")
+			}
 		default:
 			score += weightQuantity * math.Min(have/want, 1)
 			if have >= want {

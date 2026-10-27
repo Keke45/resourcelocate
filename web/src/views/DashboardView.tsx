@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
-import { ago, amount, kg, needAmount, pcs, useLabels, useUser } from "../meta";
+import { api, photoUrl } from "../api";
+import { ago, amount, handed, needAmount, useLabels, useUser } from "../meta";
 import type { Dashboard, Listing, NeedView, Transfer } from "../types";
 import { RouteChip } from "../components/bits";
+import { ShareButton } from "../components/share";
 import RequestSheet from "../components/RequestSheet";
 
 type Tab = "dashboard" | "find" | "give" | "handovers";
@@ -35,7 +36,8 @@ const listingStatus: Record<Listing["status"], string> = {
 };
 
 // DashboardView is the signed-in home: what needs the user's attention,
-// their saved needs with live matches, their listings, and their impact.
+// their saved needs with live matches, their listings, and how much they
+// have given and claimed.
 export default function DashboardView({ version, onChanged, go }: Props) {
   const user = useUser();
   const [data, setData] = useState<Dashboard | null>(null);
@@ -52,6 +54,8 @@ export default function DashboardView({ version, onChanged, go }: Props) {
   const todo = data.transfers.filter(myTurn);
   const waiting = data.transfers.filter(waitingOnOthers);
   const openListings = data.listings.filter((l) => l.status === "open").length;
+  const { given, claimed } = data.totals;
+  const done = given.handOvers + claimed.handOvers;
   const newcomer = data.listings.length === 0 && data.needs.length === 0 && data.transfers.length === 0;
 
   return (
@@ -59,8 +63,8 @@ export default function DashboardView({ version, onChanged, go }: Props) {
       <header className="dash-head">
         <div>
           <h1 className="view-title">Hello, {user.name}</h1>
-          <p className="view-lede">{user.area} · {data.impact.completed
-            ? `${data.impact.completed} finished ${data.impact.completed === 1 ? "hand-over" : "hand-overs"} so far`
+          <p className="view-lede">{user.area} · {done
+            ? `${done} finished ${done === 1 ? "hand-over" : "hand-overs"} so far`
             : "Let's get your first hand-over going"}</p>
         </div>
         <div className="actions">
@@ -73,27 +77,27 @@ export default function DashboardView({ version, onChanged, go }: Props) {
         <section className="panel welcome">
           <h2 className="section-title">Two ways to start</h2>
           <ul className="welcome-list">
-            <li><strong>Have something you don't need?</strong> List it on <button className="link" onClick={() => go("give")}>Give</button>. A photo is enough to get started.</li>
+            <li><strong>Have something you don't need?</strong> List it on <button className="link" onClick={() => go("give")}>Give</button>. It takes a minute.</li>
             <li><strong>Looking for something?</strong> Search on <button className="link" onClick={() => go("find")}>Find</button> and save it as a need. New matches will show up here.</li>
           </ul>
         </section>
       )}
 
-      <section className="stats" aria-label="Your impact">
+      <section className="stats" aria-label="What you've given and claimed">
         <div className="stat stat-lead">
-          <p className="stat-label">Kept out of the waste stream</p>
-          <p className="stat-value num">{kg(data.impact.divertedKg)}</p>
-          <p className="stat-note">from hand-overs you gave or received</p>
+          <p className="stat-label">You've given</p>
+          <p className="stat-value num">{handed(given)}</p>
+          <p className="stat-note">in {given.handOvers} finished {given.handOvers === 1 ? "hand-over" : "hand-overs"}</p>
         </div>
         <div className="stat">
-          <p className="stat-label">Items handed on</p>
-          <p className="stat-value num">{data.impact.pieces}</p>
-          <p className="stat-note">counted items such as monitors</p>
+          <p className="stat-label">You've claimed</p>
+          <p className="stat-value num">{handed(claimed)}</p>
+          <p className="stat-note">in {claimed.handOvers} finished {claimed.handOvers === 1 ? "hand-over" : "hand-overs"}</p>
         </div>
         <div className="stat">
-          <p className="stat-label">Finished hand-overs</p>
-          <p className="stat-value num">{data.impact.completed}</p>
-          <p className="stat-note">{data.impact.inProgress} in progress</p>
+          <p className="stat-label">In progress</p>
+          <p className="stat-value num">{data.totals.inProgress}</p>
+          <p className="stat-note">requested, accepted or picked up</p>
         </div>
         <div className="stat">
           <p className="stat-label">Open listings</p>
@@ -155,6 +159,7 @@ export default function DashboardView({ version, onChanged, go }: Props) {
                 const requests = data.transfers.filter((t) => t.listingId === l.id && t.status === "requested").length;
                 return (
                   <li key={l.id} className="mini-row">
+                    {l.photos > 0 && <img className="thumb thumb-small" src={photoUrl(l.id)} alt="" loading="lazy" />}
                     <div className="mini-main">
                       <p className="mini-title">{l.item}</p>
                       <p className="listing-meta">
@@ -165,6 +170,7 @@ export default function DashboardView({ version, onChanged, go }: Props) {
                     <div className="mini-side">
                       <RouteChip route={l.route} />
                       <span className={`chip status-chip status-${l.status}`}>{listingStatus[l.status]}</span>
+                      {l.status === "open" && <ShareButton listing={l} />}
                       {l.status === "open" && (
                         <button className="btn btn-small" onClick={async () => {
                           if (!confirm(`Withdraw "${l.item}"? Anyone who requested it will be told it's no longer available.`)) return;
@@ -238,7 +244,7 @@ function NeedCard({ n, onRequest, onClose }: { n: NeedView; onRequest: (l: Listi
               <button className="match-row" onClick={() => onRequest(m.listing)}>
                 <span>{m.listing.item}</span>
                 <span className="muted">
-                  {m.listing.pieces > 0 ? pcs(m.listing.pieces) : kg(m.listing.estKg)} · {m.listing.area}
+                  {amount(m.listing)} · {m.listing.area}
                 </span>
                 <span className="num fit-score">{m.score}</span>
               </button>

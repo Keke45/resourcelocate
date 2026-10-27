@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
-import { api, type NewListing } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, shrinkPhoto, type NewListing } from "../api";
 import { pcs, useMeta, useUser } from "../meta";
-import type { Draft } from "../types";
 
 type Props = { onChanged: (message: string, next?: "dashboard") => void };
 
@@ -10,108 +9,73 @@ const blank: NewListing = {
   condition: "", route: "reuse", area: "", notes: "",
 };
 
-// ListView is the provider side: an optional photo pre-fills the form, the
-// provider checks every field, then publishes the listing.
+// A photo picked for the listing, already shrunk for mobile data, with a
+// local preview URL.
+type Picked = { blob: Blob; url: string };
+
+// ListView is the giver side: describe the material, optionally add a few
+// reference photos so people looking can see what it is, and publish.
 export default function ListView({ onChanged }: Props) {
   const meta = useMeta();
   const user = useUser();
   // Pickup area starts at the user's own area.
   const fresh = (): NewListing => ({ ...blank, area: user.area });
   const [form, setForm] = useState<NewListing>(fresh);
-  // Loose material (offcuts, sawdust) is listed by weight. Separate items
-  // (monitors, desks) are listed by count plus an estimated weight per piece,
-  // because impact is still calculated by weight.
+  // Loose material (offcuts, sawdust) is listed by weight; separate items
+  // (monitors, desks) by count.
   const [measure, setMeasure] = useState<"weight" | "count">("weight");
   const [kgText, setKgText] = useState("");
   const [piecesText, setPiecesText] = useState("");
-  const [perPieceText, setPerPieceText] = useState("");
-  const [photo, setPhoto] = useState<File | null>(null);
-  const [preview, setPreview] = useState("");
-  const [reading, setReading] = useState(false);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [photoNote, setPhotoNote] = useState("");
-  const [notHazard, setNotHazard] = useState(false);
+  const [photos, setPhotos] = useState<Picked[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (!photo) return;
-    const url = URL.createObjectURL(photo);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photo]);
+  // Free the preview URLs when the page closes.
+  const current = useRef(photos);
+  current.current = photos;
+  useEffect(() => () => current.current.forEach((p) => URL.revokeObjectURL(p.url)), []);
 
   const set = <K extends keyof NewListing>(k: K, v: NewListing[K]) => setForm((f) => ({ ...f, [k]: v }));
 
-  // readPhoto asks the server to draft a listing from the photo. The draft only
-  // fills the form; nothing is published until the provider submits.
-  async function readPhoto(file: File) {
-    setPhoto(file);
-    setDraft(null);
-    setNotHazard(false);
-    setPhotoNote("");
-    if (!meta.photoReading) {
-      setPhotoNote("Photo reading is off on this server, so fill in the details below.");
-      return;
-    }
-    setReading(true);
-    try {
-      const d = await api.draftFromPhoto(file);
-      if (!d.item) {
-        setPhotoNote("We couldn't spot a listable material in that photo. Fill in the details below.");
-        return;
-      }
-      setDraft(d);
-      setForm((f) => ({ ...f, item: d.item, material: d.material, quantity: d.quantity, condition: d.condition, route: d.route }));
-      const round = (n: number) => String(Math.round(n * 10) / 10);
-      if (d.pieces > 0) {
-        setMeasure("count");
-        setPiecesText(String(d.pieces));
-        setPerPieceText(d.estKg ? round(d.estKg / d.pieces) : "");
-      } else {
-        setMeasure("weight");
-        setKgText(d.estKg ? round(d.estKg) : "");
-      }
-      setPhotoNote(
-        d.confidence === "high"
-          ? "Filled in from your photo. Check each field before you publish."
-          : "Filled in from your photo, but it wasn't sure. Check the weight and material carefully.",
-      );
-    } catch (e) {
-      setPhotoNote((e as Error).message);
-    } finally {
-      setReading(false);
-    }
+  async function addPhotos(files: FileList) {
+    const room = meta.maxPhotos - photos.length;
+    const picked = await Promise.all(
+      Array.from(files).slice(0, room).map(async (f) => {
+        const blob = await shrinkPhoto(f);
+        return { blob, url: URL.createObjectURL(blob) };
+      }),
+    );
+    setPhotos((ps) => [...ps, ...picked]);
   }
 
-  // A hazardous draft is locked to specialised handling (recyclers only)
-  // unless the provider confirms it is not hazardous.
-  const hazardBlock = draft?.hazardous && !notHazard;
+  function removePhoto(i: number) {
+    URL.revokeObjectURL(photos[i].url);
+    setPhotos((ps) => ps.filter((_, j) => j !== i));
+  }
 
   const pieces = measure === "count" ? Number(piecesText) || 0 : 0;
-  const totalKg = measure === "count" ? pieces * (Number(perPieceText) || 0) : Number(kgText) || 0;
+  const estKg = measure === "weight" ? Number(kgText) || 0 : 0;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const { listing: l, waiting } = await api.createListing({ ...form, quantity: form.quantity || (pieces ? pcs(pieces) : ""), pieces, estKg: Math.round(totalKg * 10) / 10 });
+      const { listing: l, waiting } = await api.createListing({
+        ...form, quantity: measure === "count" ? pcs(pieces) : form.quantity, pieces, estKg: Math.round(estKg * 10) / 10,
+      });
+      // The listing is live even if a photo fails; say so rather than fail the whole publish.
+      let failed = 0;
+      for (const p of photos) await api.addPhoto(l.id, p.blob).catch(() => failed++);
       setForm(fresh());
       setKgText("");
       setPiecesText("");
-      setPerPieceText("");
       setMeasure("weight");
-      setPhoto(null);
-      setPreview("");
-      setDraft(null);
-      setPhotoNote("");
-      onChanged(
-        waiting > 0
-          ? `"${l.item}" is listed. ${waiting} ${waiting === 1 ? "person is" : "people are"} looking for this material.`
-          : `"${l.item}" is listed.`,
-        "dashboard",
-      );
+      photos.forEach((p) => URL.revokeObjectURL(p.url));
+      setPhotos([]);
+      const lookers = waiting > 0 ? ` ${waiting} ${waiting === 1 ? "person is" : "people are"} looking for this material.` : "";
+      const photoNote = failed ? ` ${failed === 1 ? "A photo" : `${failed} photos`} couldn't be uploaded.` : "";
+      onChanged(`"${l.item}" is listed.${lookers}${photoNote}`, "dashboard");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -123,39 +87,10 @@ export default function ListView({ onChanged }: Props) {
     <div className="give">
       <header className="view-head">
         <h1 className="view-title">Give away unwanted material</h1>
-        <p className="view-lede">Snap a photo and we'll draft the listing. You check it, then it goes live for students, makers and recyclers.</p>
+        <p className="view-lede">Describe what you have. Once it's live, students, makers and recyclers nearby can find it and ask for it.</p>
       </header>
 
-      <div className="give-grid">
-        <section className="panel photo-panel" aria-labelledby="photo-title">
-          <h2 id="photo-title" className="section-title">1. Photo</h2>
-          <label className={`dropzone ${preview ? "has-photo" : ""}`} htmlFor="photo-input">
-            {preview ? <img src={preview} alt="Your photo of the material" /> : (
-              <span>
-                <strong>Take or choose a photo</strong>
-                <span className="muted">JPEG, PNG or WebP, under 8 MB</span>
-              </span>
-            )}
-          </label>
-          <input id="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" capture="environment"
-            className="visually-hidden"
-            onChange={(e) => e.target.files?.[0] && readPhoto(e.target.files[0])} />
-          {reading && <p className="banner banner-info">Reading your photo…</p>}
-          {photoNote && !reading && <p className="banner banner-info">{photoNote}</p>}
-          {draft?.hazardous && (
-            <div className="banner banner-critical">
-              <p><strong>This looks hazardous.</strong> {draft.hazardReason} ResourceLocate can't hand it to individuals. It's set to specialised handling so only recyclers will see it.</p>
-              <label className="check">
-                <input type="checkbox" checked={notHazard} onChange={(e) => setNotHazard(e.target.checked)} />
-                I've checked and it isn't hazardous
-              </label>
-            </div>
-          )}
-          {!meta.photoReading && <p className="fine">Photo reading is off on this server. Every field can be filled in by hand.</p>}
-        </section>
-
-        <form className="panel form" onSubmit={submit} aria-labelledby="details-title">
-          <h2 id="details-title" className="section-title">2. Details</h2>
+        <form className="panel form give-form" onSubmit={submit} aria-label="Listing details">
           <div className="field">
             <label htmlFor="l-item">What is it?</label>
             <input id="l-item" value={form.item} onChange={(e) => set("item", e.target.value)} required maxLength={80} placeholder="e.g. Hardwood offcuts" />
@@ -170,8 +105,7 @@ export default function ListView({ onChanged }: Props) {
             </div>
             <div className="field">
               <label htmlFor="l-route">Where should it go?</label>
-              <select id="l-route" value={hazardBlock ? "special" : form.route} disabled={hazardBlock}
-                onChange={(e) => set("route", e.target.value)}>
+              <select id="l-route" value={form.route} onChange={(e) => set("route", e.target.value)}>
                 {meta.routes.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
               </select>
             </div>
@@ -196,25 +130,11 @@ export default function ListView({ onChanged }: Props) {
               </div>
             </div>
           ) : (
-            <>
-              <div className="row">
-                <div className="field">
-                  <label htmlFor="l-pieces">Number of pieces</label>
-                  <input id="l-pieces" inputMode="numeric" value={piecesText} required placeholder="e.g. 12"
-                    onChange={(e) => setPiecesText(e.target.value.replace(/[^0-9]/g, ""))} />
-                </div>
-                <div className="field">
-                  <label htmlFor="l-perpiece">Weight of one piece (kg, estimate)</label>
-                  <input id="l-perpiece" inputMode="decimal" value={perPieceText} required placeholder="e.g. 4.5"
-                    onChange={(e) => setPerPieceText(e.target.value.replace(/[^0-9.]/g, ""))} />
-                </div>
-              </div>
-              <p className="fine">
-                {pieces > 0 && totalKg > 0
-                  ? `About ${Math.round(totalKg * 10) / 10} kg in total. Impact is calculated by weight, so a rough guess per piece is enough.`
-                  : "Impact is calculated by weight, so add a rough guess per piece."}
-              </p>
-            </>
+            <div className="field">
+              <label htmlFor="l-pieces">Number of pieces</label>
+              <input id="l-pieces" inputMode="numeric" value={piecesText} required placeholder="e.g. 12"
+                onChange={(e) => setPiecesText(e.target.value.replace(/[^0-9]/g, ""))} />
+            </div>
           )}
           <div className="field">
             <label htmlFor="l-condition">Condition</label>
@@ -238,13 +158,32 @@ export default function ListView({ onChanged }: Props) {
             <label htmlFor="l-notes">Notes (optional)</label>
             <textarea id="l-notes" rows={2} value={form.notes} onChange={(e) => set("notes", e.target.value)} maxLength={280} />
           </div>
+          <fieldset className="field">
+            <legend>Photos (optional)</legend>
+            <p className="fine">Up to {meta.maxPhotos}. They help people see what you're giving away before they ask for it.</p>
+            <div className="photo-picks">
+              {photos.map((p, i) => (
+                <div key={p.url} className="photo-pick">
+                  <img src={p.url} alt={`Photo ${i + 1}`} />
+                  <button type="button" className="photo-remove" onClick={() => removePhoto(i)} aria-label={`Remove photo ${i + 1}`}>×</button>
+                </div>
+              ))}
+              {photos.length < meta.maxPhotos && (
+                <label className="photo-add" htmlFor="photo-input">
+                  <span aria-hidden="true">+</span>
+                  Add photo
+                </label>
+              )}
+            </div>
+            <input id="photo-input" type="file" accept="image/jpeg,image/png,image/webp" multiple className="visually-hidden"
+              onChange={(e) => { if (e.target.files?.length) addPhotos(e.target.files); e.target.value = ""; }} />
+          </fieldset>
           <p className="fine">Hazardous, medical and chemical waste can't be listed.</p>
           {error && <p className="banner banner-error">{error}</p>}
-          <button className="btn btn-primary" disabled={busy || reading}>
+          <button className="btn btn-primary" disabled={busy}>
             {busy ? "Publishing…" : "Publish listing"}
           </button>
         </form>
-      </div>
     </div>
   );
 }
