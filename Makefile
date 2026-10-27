@@ -1,6 +1,6 @@
 .PHONY: dev-api dev-web build test
 
-# Terminal 1: API on :8080 with sample data.
+# Terminal 1: API on :8080.
 dev-api:
 	go run ./cmd/server
 
