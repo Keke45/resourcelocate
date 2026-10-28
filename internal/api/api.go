@@ -3,6 +3,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -60,13 +62,16 @@ func (s *Server) Routes(mux *http.ServeMux) {
 
 	api.HandleFunc("GET /api/dashboard", s.signedIn(s.dashboard))
 	api.HandleFunc("POST /api/listings", s.signedIn(s.createListing))
+	api.HandleFunc("PUT /api/listings/{id}", s.signedIn(s.updateListing))
 	api.HandleFunc("POST /api/listings/{id}/withdraw", s.signedIn(s.withdrawListing))
 	api.HandleFunc("POST /api/listings/{id}/photos", s.signedIn(s.uploadPhoto))
+	api.HandleFunc("DELETE /api/listings/{id}/photos/{n}", s.signedIn(s.deletePhoto))
 	api.HandleFunc("GET /api/listings/{id}/photos/{n}", s.photo)
 	api.HandleFunc("GET /api/public/listings/{id}", s.publicListing)
 	api.HandleFunc("GET /api/matches", s.signedIn(s.matches))
 	api.HandleFunc("GET /api/needs", s.signedIn(s.needs))
 	api.HandleFunc("POST /api/needs", s.signedIn(s.createNeed))
+	api.HandleFunc("PUT /api/needs/{id}", s.signedIn(s.updateNeed))
 	api.HandleFunc("POST /api/needs/{id}/close", s.signedIn(s.closeNeed))
 	api.HandleFunc("GET /api/transfers", s.signedIn(s.transfers))
 	api.HandleFunc("POST /api/transfers", s.signedIn(s.requestListing))
@@ -333,6 +338,30 @@ func (s *Server) createListing(w http.ResponseWriter, r *http.Request, u domain.
 	writeJSON(w, http.StatusCreated, map[string]any{"listing": l, "waiting": waiting})
 }
 
+// updateListing changes the details of one of the user's open listings.
+// As with createListing, only the fields a giver may set are copied.
+func (s *Server) updateListing(w http.ResponseWriter, r *http.Request, u domain.User) {
+	var in domain.Listing
+	if err := decode(r, &in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	l := domain.Listing{
+		ID: r.PathValue("id"), ProviderName: u.Name, Contact: in.Contact, Item: in.Item, Material: in.Material,
+		Quantity: in.Quantity, Pieces: in.Pieces, EstKg: in.EstKg, Condition: in.Condition, Route: in.Route,
+		Area: in.Area, Notes: in.Notes,
+	}
+	if err := domain.ValidateListing(&l); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.store.UpdateListing(r.Context(), u.ID, &l); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
+}
+
 func (s *Server) withdrawListing(w http.ResponseWriter, r *http.Request, u domain.User) {
 	if err := s.store.WithdrawListing(r.Context(), u.ID, r.PathValue("id")); err != nil {
 		writeErr(w, err)
@@ -365,6 +394,19 @@ func (s *Server) uploadPhoto(w http.ResponseWriter, r *http.Request, u domain.Us
 	writeJSON(w, http.StatusCreated, map[string]int{"n": n})
 }
 
+func (s *Server) deletePhoto(w http.ResponseWriter, r *http.Request, u domain.User) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil {
+		writeErr(w, store.ErrNotFound)
+		return
+	}
+	if err := s.store.DeletePhoto(r.Context(), u.ID, r.PathValue("id"), n); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // photo serves one of a listing's photos. Photos are public, like the
 // listing's share page, so link previews in chat apps can show them; a
 // withdrawn listing's photos are not served.
@@ -387,8 +429,17 @@ func (s *Server) photo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// Photos move down a place when an earlier one is removed, so the same
+	// URL can change: browsers keep a copy but check it with the ETag.
+	sum := sha256.Sum256(data)
+	etag := `"` + hex.EncodeToString(sum[:8]) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Write(data)
 }
@@ -474,6 +525,24 @@ func (s *Server) createNeed(w http.ResponseWriter, r *http.Request, u domain.Use
 		return
 	}
 	writeJSON(w, http.StatusCreated, n)
+}
+
+func (s *Server) updateNeed(w http.ResponseWriter, r *http.Request, u domain.User) {
+	var in domain.SavedNeed
+	if err := decode(r, &in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	n := domain.SavedNeed{ID: r.PathValue("id"), Material: in.Material, Kg: in.Kg, Pieces: in.Pieces, Area: in.Area, Note: in.Note}
+	if err := domain.ValidateNeed(&n); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.store.UpdateNeed(r.Context(), u.ID, &n); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
 }
 
 func (s *Server) closeNeed(w http.ResponseWriter, r *http.Request, u domain.User) {

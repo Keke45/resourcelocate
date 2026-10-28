@@ -204,3 +204,68 @@ func TestChangePasswordEndsOtherSessions(t *testing.T) {
 		t.Fatalf("other session: got %v, want not found", err)
 	}
 }
+
+func TestEditListingPhotosAndNeeds(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	giver, other := newUser(t, s, "giver"), newUser(t, s, "other")
+
+	l := domain.Listing{OwnerID: giver.ID, ProviderName: giver.Name, Item: "Offcuts", Material: "wood", EstKg: 10, Route: domain.RouteReuse, Area: "Kabwata"}
+	if err := s.CreateListing(ctx, &l); err != nil {
+		t.Fatal(err)
+	}
+	edit := domain.Listing{ID: l.ID, Item: "Pine offcuts", Material: "wood", Pieces: 12, Route: domain.RouteRepair, Area: "Matero"}
+	if err := s.UpdateListing(ctx, other.ID, &edit); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("editing someone else's listing: got %v, want forbidden", err)
+	}
+	if err := s.UpdateListing(ctx, giver.ID, &edit); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Listing(ctx, l.ID)
+	if got.Item != "Pine offcuts" || got.Pieces != 12 || got.Area != "Matero" || got.OwnerID != giver.ID || got.Status != domain.ListingOpen {
+		t.Fatalf("after edit: %+v", got)
+	}
+
+	for _, b := range []string{"a", "b", "c"} {
+		if _, err := s.AddPhoto(ctx, giver.ID, l.ID, "image/png", []byte(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeletePhoto(ctx, other.ID, l.ID, 0); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("removing someone else's photo: got %v, want forbidden", err)
+	}
+	if err := s.DeletePhoto(ctx, giver.ID, l.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	for n, want := range []string{"b", "c"} {
+		_, data, err := s.Photo(ctx, l.ID, n)
+		if err != nil || string(data) != want {
+			t.Fatalf("photo %d after removing the first: %q, %v; want %q", n, data, err, want)
+		}
+	}
+	if got, _ := s.Listing(ctx, l.ID); got.Photos != 2 {
+		t.Fatalf("photo count %d, want 2", got.Photos)
+	}
+
+	if err := s.WithdrawListing(ctx, giver.ID, l.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateListing(ctx, giver.ID, &edit); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("editing a withdrawn listing: got %v, want conflict", err)
+	}
+
+	n := domain.SavedNeed{UserID: giver.ID, Material: "wood", Kg: 5}
+	if err := s.CreateNeed(ctx, &n); err != nil {
+		t.Fatal(err)
+	}
+	change := domain.SavedNeed{ID: n.ID, Material: "textiles", Pieces: 3, Area: "Matero", Note: "for bags"}
+	if err := s.UpdateNeed(ctx, other.ID, &change); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("editing someone else's need: got %v, want not found", err)
+	}
+	if err := s.UpdateNeed(ctx, giver.ID, &change); err != nil {
+		t.Fatal(err)
+	}
+	if change.Material != "textiles" || change.Kg != 0 || change.Pieces != 3 || change.UserID != giver.ID {
+		t.Fatalf("after need edit: %+v", change)
+	}
+}

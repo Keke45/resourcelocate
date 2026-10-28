@@ -91,12 +91,16 @@ export const api = {
   matches: (q: { material: string; kg: string; pieces: string; area: string }) =>
     call<Match[]>("/api/matches?" + new URLSearchParams(q)),
   createListing: (l: NewListing) => call<{ listing: Listing; waiting: number }>("/api/listings", json("POST", l)),
+  updateListing: (id: string, l: NewListing) => call<Listing>(`/api/listings/${encodeURIComponent(id)}`, json("PUT", l)),
   addPhoto: (id: string, photo: Blob) =>
     call<{ n: number }>(`/api/listings/${encodeURIComponent(id)}/photos`, { method: "POST", body: photo }),
+  deletePhoto: (id: string, n: number) =>
+    call<null>(`/api/listings/${encodeURIComponent(id)}/photos/${n}`, { method: "DELETE" }),
   withdrawListing: (id: string) => call<null>(`/api/listings/${encodeURIComponent(id)}/withdraw`, { method: "POST" }),
 
   needs: () => call<NeedView[]>("/api/needs"),
   saveNeed: (n: NewNeed) => call<SavedNeed>("/api/needs", json("POST", n)),
+  updateNeed: (id: string, n: NewNeed) => call<SavedNeed>(`/api/needs/${encodeURIComponent(id)}`, json("PUT", n)),
   closeNeed: (id: string) => call<null>(`/api/needs/${encodeURIComponent(id)}/close`, { method: "POST" }),
 
   transfers: () => call<Transfer[]>("/api/transfers"),

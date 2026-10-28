@@ -50,7 +50,7 @@ Each listing is measured one way. Loose material such as offcuts, sawdust or fab
 
 ## Run it
 
-You need Go 1.26 or newer (Go 1.21 or later fetches the right version by itself on first run). Node 20 or newer is only needed if you change the front end.
+You need Go 1.26 or newer (Go 1.21 or later fetches the right version by itself on first run). Node 20.19 or newer (22 recommended) is only needed if you change the front end.
 
 ```sh
 go run ./cmd/server
@@ -78,6 +78,44 @@ go test ./...
 
 The tests cover password hashing, sessions and password changes, rate limiting, who may take each hand-over step, the transfer lifecycle, weight and counted listings, the recyclers-only rule, match ranking, withdrawing listings, saved needs, listing photos and the given and claimed totals.
 
+## Dependencies
+
+The project keeps its dependencies small.
+
+| Part | Dependencies | Lock file |
+| --- | --- | --- |
+| Go server | `modernc.org/sqlite` (pure-Go SQLite, no C compiler needed) and the standard library | `go.mod`, `go.sum` |
+| Web app | React 18; for building only: Vite 7, TypeScript, `@vitejs/plugin-react` | `web/package.json`, `web/package-lock.json` |
+| Docker | `node:22-alpine` and `golang:1.26-alpine` to build, `distroless/static` to run | `Dockerfile` |
+
+The web app's packages are only needed to build it. The server ships the built files inside its binary, so nothing from `node_modules` runs in production.
+
+**Install** (after cloning or unzipping):
+
+```sh
+go mod download          # Go modules (go run / go build also do this)
+cd web && npm ci         # exact versions from package-lock.json
+```
+
+**Check for updates and known security issues:**
+
+```sh
+go list -m -u all | grep '\['                          # Go modules with a newer version
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...    # Go security advisories
+cd web && npm outdated && npm audit                      # web packages
+```
+
+**Update:**
+
+```sh
+go get -u ./... && go mod tidy && go test ./...          # Go modules
+cd web && npm update && npm audit fix && npm run build   # web packages within their ranges
+```
+
+After updating web packages, run `npm run build` so the embedded app in `internal/webui/dist` is rebuilt, then commit both the lock file and `dist`. Major versions (React 19, Vite 8) need code changes; upgrade them on purpose, one at a time.
+
+On GitHub, `.github/dependabot.yml` has Dependabot open a pull request each week with updates for Go, npm and the Docker images. Security fixes come as soon as they're published. Render redeploys when you merge one.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -85,7 +123,7 @@ The tests cover password hashing, sessions and password changes, rate limiting, 
 | `PORT` | `8080` | HTTP port |
 | `DB_PATH` | `resource.db` | SQLite file |
 | `TRUST_PROXY` | unset | `1` when running behind a proxy that sets `X-Forwarded-For` (Render, Fly.io), so rate limits apply per visitor instead of to the proxy. Leave unset otherwise, since anyone can send that header. |
-| `DEMO_LOGINS` | unset | `1` adds "Demo giver" and "Demo seeker" buttons on the login page, so judges can try both sides of a hand-over without signing up. The two accounts start empty and are shared by everyone who uses them. |
+| `DEMO_LOGINS` | unset | `1` adds "Demo giver" and "Demo seeker" buttons on the login page, so judges can try both sides of a hand-over without signing up. It also fills an empty database with a few weeks of made-up activity around the two accounts (fictional people, listings, saved needs and hand-overs at every stage; see `internal/api/demoseed.go`), so there is something to look at and act on. The accounts are shared by everyone who uses them; changes stay until the database is reset. With `DEMO_LOGINS` unset there is no sample data. |
 
 ## Rate limits
 
@@ -93,7 +131,21 @@ Every API request is limited per IP address: bursts of 300, then 5 a second, pho
 
 ## Deploy
 
-The `Dockerfile` builds the web app and a static Go binary. Any host that runs a container works, such as Render, Fly.io or Railway. Mount a volume at `/data` to keep the database between deploys; without one, accounts and listings are lost on every deploy. Serve it over HTTPS: the session cookie is marked `Secure` when the request arrives over TLS or with `X-Forwarded-Proto: https`.
+The `Dockerfile` builds the web app and a small static Go binary (about 30 MB image). Any host that runs a container works. The database is one SQLite file at `/data/resource.db`, so the host must keep `/data` on a persistent disk; without one, accounts and listings are lost on every deploy or restart.
+
+### Render (set up in `render.yaml`)
+
+1. Push this repository to GitHub.
+2. In Render, choose **New > Blueprint** and pick the repository. Render reads `render.yaml`: a Docker web service on the free plan, a health check on `/healthz`, and `TRUST_PROXY=1` and `DEMO_LOGINS=1`.
+3. Deploy. The app is served over HTTPS at `https://<name>.onrender.com`, which share links and installing the app need. Every push to the main branch redeploys.
+
+On the free plan there is no persistent disk: the database starts empty after every deploy and every restart, including when the site wakes after 15 idle minutes. That is fine for trying it out, not for real use. To keep data, change `plan: free` to `plan: starter` in `render.yaml` and uncomment the `disk` block (a paid plan), or move the database to a hosted service.
+
+Remove `DEMO_LOGINS` once judging is over. To use your own domain, add it under the service's **Settings > Custom Domains**.
+
+### Anywhere else
+
+Run the image with a volume at `/data`, set `PORT` if the host requires a specific one, set `TRUST_PROXY=1` behind a proxy or load balancer, and serve it over HTTPS: the session cookie is marked `Secure` when the request arrives over TLS or with `X-Forwarded-Proto: https`.
 
 ## Project layout
 
@@ -134,10 +186,13 @@ Signed in:
 | `POST /api/me/password` | `{"current": "...", "new": "..."}`: change password, logging out other devices |
 | `GET /api/dashboard` | Your listings, needs with matches, hand-overs, and what you've given and claimed |
 | `POST /api/listings` | Publish a listing |
+| `PUT /api/listings/{id}` | Edit one of your open listings |
+| `DELETE /api/listings/{id}/photos/{n}` | Remove a photo from one of your listings (later photos move down one) |
 | `POST /api/listings/{id}/withdraw` | Take down one of your open listings |
 | `POST /api/listings/{id}/photos` | Add a reference photo (raw JPEG, PNG or WebP body, up to 2 MB, at most 4 per listing) |
 | `GET /api/matches?material=&kg=&pieces=&area=` | Ranked open listings from other people |
 | `GET /api/needs`, `POST /api/needs` | Your saved needs (with live matches), save a need |
+| `PUT /api/needs/{id}` | Edit one of your saved needs |
 | `POST /api/needs/{id}/close` | Remove a need |
 | `GET /api/transfers` | Your hand-overs, as giver or receiver |
 | `POST /api/transfers` | Request a listing |

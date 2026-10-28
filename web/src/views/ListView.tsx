@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { api, shrinkPhoto, type NewListing } from "../api";
+import { api, photoUrl, shrinkPhoto, type NewListing } from "../api";
 import { pcs, useMeta, useUser } from "../meta";
+import type { Listing } from "../types";
 
-type Props = { onChanged: (message: string, next?: "dashboard") => void };
+// With editing set, the form changes that listing instead of publishing a
+// new one; onCancel leaves without saving.
+type Props = { editing?: Listing | null; onChanged: (message: string, next?: "dashboard") => void; onCancel?: () => void };
 
 const blank: NewListing = {
   contact: "", item: "", material: "", quantity: "", pieces: 0, estKg: 0,
@@ -14,18 +17,26 @@ const blank: NewListing = {
 type Picked = { blob: Blob; url: string };
 
 // ListView is the giver side: describe the material, optionally add a few
-// reference photos so people looking can see what it is, and publish.
-export default function ListView({ onChanged }: Props) {
+// reference photos so people looking can see what it is, and publish. It
+// also edits an open listing, photos included.
+export default function ListView({ editing, onChanged, onCancel }: Props) {
   const meta = useMeta();
   const user = useUser();
   // Pickup area starts at the user's own area.
   const fresh = (): NewListing => ({ ...blank, area: user.area });
-  const [form, setForm] = useState<NewListing>(fresh);
+  const [form, setForm] = useState<NewListing>(() => {
+    if (!editing) return fresh();
+    const { contact, item, material, quantity, pieces, estKg, condition, route, area, notes } = editing;
+    return { contact, item, material, quantity, pieces, estKg, condition, route, area, notes };
+  });
   // Loose material (offcuts, sawdust) is listed by weight; separate items
   // (monitors, desks) by count.
-  const [measure, setMeasure] = useState<"weight" | "count">("weight");
-  const [kgText, setKgText] = useState("");
-  const [piecesText, setPiecesText] = useState("");
+  const [measure, setMeasure] = useState<"weight" | "count">(editing && editing.pieces > 0 ? "count" : "weight");
+  const [kgText, setKgText] = useState(editing?.estKg ? String(editing.estKg) : "");
+  const [piecesText, setPiecesText] = useState(editing?.pieces ? String(editing.pieces) : "");
+  // When editing, the photos already on the listing (by number) that the
+  // giver is keeping; the rest are removed on save.
+  const [kept, setKept] = useState<number[]>(() => Array.from({ length: editing?.photos ?? 0 }, (_, i) => i));
   const [photos, setPhotos] = useState<Picked[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,7 +49,7 @@ export default function ListView({ onChanged }: Props) {
   const set = <K extends keyof NewListing>(k: K, v: NewListing[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   async function addPhotos(files: FileList) {
-    const room = meta.maxPhotos - photos.length;
+    const room = meta.maxPhotos - kept.length - photos.length;
     const picked = await Promise.all(
       Array.from(files).slice(0, room).map(async (f) => {
         const blob = await shrinkPhoto(f);
@@ -60,10 +71,24 @@ export default function ListView({ onChanged }: Props) {
     e.preventDefault();
     setBusy(true);
     setError("");
+    const details = {
+      ...form, quantity: measure === "count" ? pcs(pieces) : form.quantity, pieces, estKg: Math.round(estKg * 10) / 10,
+    };
     try {
-      const { listing: l, waiting } = await api.createListing({
-        ...form, quantity: measure === "count" ? pcs(pieces) : form.quantity, pieces, estKg: Math.round(estKg * 10) / 10,
-      });
+      if (editing) {
+        await api.updateListing(editing.id, details);
+        // Remove from the highest number down, so the photos still to go
+        // keep their numbers as earlier ones are taken out.
+        const removed = Array.from({ length: editing.photos }, (_, i) => i).filter((i) => !kept.includes(i)).reverse();
+        let failed = 0;
+        for (const n of removed) await api.deletePhoto(editing.id, n).catch(() => failed++);
+        for (const p of photos) await api.addPhoto(editing.id, p.blob).catch(() => failed++);
+        photos.forEach((p) => URL.revokeObjectURL(p.url));
+        setPhotos([]);
+        onChanged(`"${details.item}" is updated.${failed ? " Some photo changes didn't go through." : ""}`, "dashboard");
+        return;
+      }
+      const { listing: l, waiting } = await api.createListing(details);
       // The listing is live even if a photo fails; say so rather than fail the whole publish.
       let failed = 0;
       for (const p of photos) await api.addPhoto(l.id, p.blob).catch(() => failed++);
@@ -86,8 +111,10 @@ export default function ListView({ onChanged }: Props) {
   return (
     <div className="give">
       <header className="view-head">
-        <h1 className="view-title">Give away unwanted material</h1>
-        <p className="view-lede">Describe what you have. Once it's live, students, makers and recyclers nearby can find it and ask for it.</p>
+        <h1 className="view-title">{editing ? "Edit your listing" : "Give away unwanted material"}</h1>
+        <p className="view-lede">{editing
+          ? "Changes show straight away to anyone looking. Anyone who already asked for it keeps their request."
+          : "Describe what you have. Once it's live, students, makers and recyclers nearby can find it and ask for it."}</p>
       </header>
 
         <form className="panel form give-form" onSubmit={submit} aria-label="Listing details">
@@ -162,13 +189,19 @@ export default function ListView({ onChanged }: Props) {
             <legend>Photos (optional)</legend>
             <p className="fine">Up to {meta.maxPhotos}. They help people see what you're giving away before they ask for it.</p>
             <div className="photo-picks">
+              {editing && kept.map((n) => (
+                <div key={`kept-${n}`} className="photo-pick">
+                  <img src={photoUrl(editing.id, n)} alt={`Photo ${n + 1}`} />
+                  <button type="button" className="photo-remove" onClick={() => setKept((k) => k.filter((x) => x !== n))} aria-label={`Remove photo ${n + 1}`}>×</button>
+                </div>
+              ))}
               {photos.map((p, i) => (
                 <div key={p.url} className="photo-pick">
                   <img src={p.url} alt={`Photo ${i + 1}`} />
                   <button type="button" className="photo-remove" onClick={() => removePhoto(i)} aria-label={`Remove photo ${i + 1}`}>×</button>
                 </div>
               ))}
-              {photos.length < meta.maxPhotos && (
+              {kept.length + photos.length < meta.maxPhotos && (
                 <label className="photo-add" htmlFor="photo-input">
                   <span aria-hidden="true">+</span>
                   Add photo
@@ -180,9 +213,12 @@ export default function ListView({ onChanged }: Props) {
           </fieldset>
           <p className="fine">Hazardous, medical and chemical waste can't be listed.</p>
           {error && <p className="banner banner-error">{error}</p>}
-          <button className="btn btn-primary" disabled={busy}>
-            {busy ? "Publishing…" : "Publish listing"}
-          </button>
+          <div className="actions">
+            <button className="btn btn-primary" disabled={busy}>
+              {editing ? (busy ? "Saving…" : "Save changes") : busy ? "Publishing…" : "Publish listing"}
+            </button>
+            {editing && <button type="button" className="btn" onClick={onCancel} disabled={busy}>Cancel</button>}
+          </div>
         </form>
     </div>
   );

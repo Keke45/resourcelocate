@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
 import { api, photoUrl } from "../api";
-import { ago, amount, handed, needAmount, useLabels, useUser } from "../meta";
+import { ago, amount, handed, needAmount, useLabels, useMeta, useUser } from "../meta";
 import type { Dashboard, Listing, NeedView, Transfer } from "../types";
 import { RouteChip } from "../components/bits";
 import { ShareButton } from "../components/share";
 import RequestSheet from "../components/RequestSheet";
 
 type Tab = "dashboard" | "find" | "give" | "handovers";
-type Props = { version: number; onChanged: (message: string, next?: Tab) => void; go: (t: Tab) => void };
+type Props = {
+  version: number;
+  onChanged: (message: string, next?: Tab) => void;
+  go: (t: Tab) => void;
+  // Opens one of the user's listings in the Give form for editing.
+  onEdit: (l: Listing) => void;
+};
 
 // myTurn reports whether a hand-over is waiting on the signed-in user: the
 // giver answers requests and confirms pickups, the receiver records outcomes.
@@ -38,7 +44,7 @@ const listingStatus: Record<Listing["status"], string> = {
 // DashboardView is the signed-in home: what needs the user's attention,
 // their saved needs with live matches, their listings, and how much they
 // have given and claimed.
-export default function DashboardView({ version, onChanged, go }: Props) {
+export default function DashboardView({ version, onChanged, go, onEdit }: Props) {
   const user = useUser();
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState("");
@@ -134,7 +140,7 @@ export default function DashboardView({ version, onChanged, go }: Props) {
           ) : (
             <ul className="mini-list">
               {data.needs.map((n) => (
-                <NeedCard key={n.id} n={n} onRequest={setRequesting}
+                <NeedCard key={n.id} n={n} onRequest={setRequesting} onSaved={() => onChanged("Need updated.")}
                   onClose={async () => {
                     try {
                       await api.closeNeed(n.id);
@@ -171,6 +177,7 @@ export default function DashboardView({ version, onChanged, go }: Props) {
                       <RouteChip route={l.route} />
                       <span className={`chip status-chip status-${l.status}`}>{listingStatus[l.status]}</span>
                       {l.status === "open" && <ShareButton listing={l} />}
+                      {l.status === "open" && <button className="btn btn-small" onClick={() => onEdit(l)}>Edit</button>}
                       {l.status === "open" && (
                         <button className="btn btn-small" onClick={async () => {
                           if (!confirm(`Withdraw "${l.item}"? Anyone who requested it will be told it's no longer available.`)) return;
@@ -217,10 +224,15 @@ function TransferRow({ t, onOpen }: { t: Transfer; onOpen: () => void }) {
   );
 }
 
-// NeedCard shows a saved need and its best current matches.
-function NeedCard({ n, onRequest, onClose }: { n: NeedView; onRequest: (l: Listing) => void; onClose: () => void }) {
+// NeedCard shows a saved need and its best current matches. Edit swaps
+// the summary for a small form in place.
+function NeedCard({ n, onRequest, onClose, onSaved }: {
+  n: NeedView; onRequest: (l: Listing) => void; onClose: () => void; onSaved: () => void;
+}) {
   const labels = useLabels();
+  const [editing, setEditing] = useState(false);
   const top = n.matches.slice(0, 3);
+  if (editing) return <NeedForm n={n} onCancel={() => setEditing(false)} onSaved={() => { setEditing(false); onSaved(); }} />;
   return (
     <li className="need-card">
       <div className="mini-row">
@@ -234,6 +246,7 @@ function NeedCard({ n, onRequest, onClose }: { n: NeedView; onRequest: (l: Listi
           <span className={`chip ${n.matches.length ? "chip-good" : "chip-quiet"}`}>
             {n.matches.length ? `${n.matches.length} ${n.matches.length === 1 ? "match" : "matches"}` : "No matches yet"}
           </span>
+          <button className="btn btn-small" onClick={() => setEditing(true)} aria-label="Edit this need">Edit</button>
           <button className="btn btn-small" onClick={onClose} aria-label="Remove this need">Remove</button>
         </div>
       </div>
@@ -252,6 +265,79 @@ function NeedCard({ n, onRequest, onClose }: { n: NeedView; onRequest: (l: Listi
           ))}
         </ul>
       )}
+    </li>
+  );
+}
+
+// NeedForm edits a saved need: material, amount in kg or pieces, area and note.
+function NeedForm({ n, onCancel, onSaved }: { n: NeedView; onCancel: () => void; onSaved: () => void }) {
+  const meta = useMeta();
+  const [material, setMaterial] = useState(n.material);
+  const [unit, setUnit] = useState<"kg" | "pieces">(n.pieces > 0 ? "pieces" : "kg");
+  const [amountText, setAmountText] = useState(n.pieces > 0 ? String(n.pieces) : n.kg > 0 ? String(n.kg) : "");
+  const [area, setArea] = useState(n.area);
+  const [note, setNote] = useState(n.note);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const v = Number(amountText) || 0;
+      await api.updateNeed(n.id, { material, kg: unit === "kg" ? v : 0, pieces: unit === "pieces" ? Math.round(v) : 0, area, note });
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <li className="need-card">
+      <form className="form need-edit" onSubmit={save} aria-label="Edit need">
+        <div className="row">
+          <div className="field">
+            <label htmlFor={`ne-material-${n.id}`}>Material</label>
+            <select id={`ne-material-${n.id}`} value={material} onChange={(e) => setMaterial(e.target.value)} required>
+              {meta.materials.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor={`ne-amount-${n.id}`}>Amount needed</label>
+            <div className="with-unit">
+              <input id={`ne-amount-${n.id}`} inputMode={unit === "kg" ? "decimal" : "numeric"} value={amountText} placeholder="Any"
+                onChange={(e) => setAmountText(e.target.value.replace(unit === "kg" ? /[^0-9.]/g : /[^0-9]/g, ""))} />
+              <select aria-label="Unit" value={unit} onChange={(e) => {
+                setUnit(e.target.value as "kg" | "pieces");
+                setAmountText((a) => a.replace(/\..*$/, ""));
+              }}>
+                <option value="kg">kg</option>
+                <option value="pieces">pieces</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="row">
+          <div className="field">
+            <label htmlFor={`ne-area-${n.id}`}>Area</label>
+            <select id={`ne-area-${n.id}`} value={area} onChange={(e) => setArea(e.target.value)}>
+              <option value="">Anywhere in Lusaka</option>
+              {meta.areas.map((a) => <option key={a}>{a}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor={`ne-note-${n.id}`}>Note</label>
+            <input id={`ne-note-${n.id}`} value={note} onChange={(e) => setNote(e.target.value)} maxLength={200} />
+          </div>
+        </div>
+        {error && <p className="banner banner-error">{error}</p>}
+        <div className="actions">
+          <button className="btn btn-primary btn-small" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+          <button type="button" className="btn btn-small" onClick={onCancel} disabled={busy}>Cancel</button>
+        </div>
+      </form>
     </li>
   );
 }
