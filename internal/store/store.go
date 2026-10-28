@@ -262,6 +262,38 @@ func (s *Store) WithdrawListing(ctx context.Context, userID, id string) error {
 	return tx.Commit()
 }
 
+// UpdateListing replaces the details of one of userID's listings. Only an
+// open listing can be edited: once a request is accepted the receiver has
+// agreed to what was listed. The owner, status, photos and creation time
+// stay as they were.
+func (s *Store) UpdateListing(ctx context.Context, userID string, l *domain.Listing) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	cur, err := scanListing(tx.QueryRowContext(ctx, `SELECT `+listingCols+` FROM listings WHERE id = ?`, l.ID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if cur.OwnerID != userID {
+		return fmt.Errorf("%w: only the person who listed this material can edit it", domain.ErrForbidden)
+	}
+	if cur.Status != domain.ListingOpen {
+		return fmt.Errorf("%w: only an open listing can be edited", domain.ErrConflict)
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE listings SET contact=?, item=?, material=?, quantity=?, pieces=?, est_kg=?,
+		condition=?, route=?, area=?, notes=? WHERE id=?`,
+		l.Contact, l.Item, l.Material, l.Quantity, l.Pieces, l.EstKg, l.Condition, l.Route, l.Area, l.Notes, l.ID)
+	if err != nil {
+		return err
+	}
+	l.OwnerID, l.ProviderName, l.Status, l.Photos, l.CreatedAt = cur.OwnerID, cur.ProviderName, cur.Status, cur.Photos, cur.CreatedAt
+	return tx.Commit()
+}
+
 // AddPhoto attaches a reference photo to one of userID's listings and
 // returns its number. A listing holds at most domain.MaxPhotos.
 func (s *Store) AddPhoto(ctx context.Context, userID, listingID, contentType string, data []byte) (int, error) {
@@ -293,6 +325,43 @@ func (s *Store) AddPhoto(ctx context.Context, userID, listingID, contentType str
 		return 0, err
 	}
 	return n, tx.Commit()
+}
+
+// DeletePhoto removes photo n from one of userID's listings. Later photos
+// move down one place, so the numbers stay 0 to photo_count-1.
+func (s *Store) DeletePhoto(ctx context.Context, userID, listingID string, n int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var owner string
+	var count int
+	err = tx.QueryRowContext(ctx, `SELECT owner_id, photo_count FROM listings WHERE id = ?`, listingID).Scan(&owner, &count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if owner != userID {
+		return fmt.Errorf("%w: only the person who listed this material can remove its photos", domain.ErrForbidden)
+	}
+	if n < 0 || n >= count {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM listing_photos WHERE listing_id = ? AND n = ?`, listingID, n); err != nil {
+		return err
+	}
+	// Shift one at a time, lowest first, so no step collides with the key.
+	for i := n + 1; i < count; i++ {
+		if _, err := tx.ExecContext(ctx, `UPDATE listing_photos SET n = ? WHERE listing_id = ? AND n = ?`, i-1, listingID, i); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE listings SET photo_count = ? WHERE id = ?`, count-1, listingID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Photo returns photo n of a listing and its content type.
@@ -349,7 +418,9 @@ func (s *Store) OpenNeeds(ctx context.Context) ([]domain.SavedNeed, error) {
 func (s *Store) CreateNeed(ctx context.Context, n *domain.SavedNeed) error {
 	n.ID = NewID()
 	n.Status = domain.NeedOpen
-	n.CreatedAt = time.Now().UTC()
+	if n.CreatedAt.IsZero() {
+		n.CreatedAt = time.Now().UTC()
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO needs (`+needCols+`) VALUES (?,?,?,?,?,?,?,?,?)`,
 		n.ID, n.UserID, n.Material, n.Kg, n.Pieces, n.Area, n.Note, n.Status, ts(n.CreatedAt))
 	return err
@@ -364,6 +435,24 @@ func (s *Store) CloseNeed(ctx context.Context, userID, id string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	return nil
+}
+
+// UpdateNeed changes one of the user's open needs.
+func (s *Store) UpdateNeed(ctx context.Context, userID string, n *domain.SavedNeed) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE needs SET material=?, kg=?, pieces=?, area=?, note=? WHERE id=? AND user_id=? AND status=?`,
+		n.Material, n.Kg, n.Pieces, n.Area, n.Note, n.ID, userID, domain.NeedOpen)
+	if err != nil {
+		return err
+	}
+	if c, _ := res.RowsAffected(); c == 0 {
+		return ErrNotFound
+	}
+	got, err := s.queryNeeds(ctx, "WHERE id = ?", n.ID)
+	if err != nil || len(got) == 0 {
+		return err
+	}
+	*n = got[0]
 	return nil
 }
 
@@ -500,4 +589,17 @@ func (s *Store) Advance(ctx context.Context, actorID, id string, step domain.Ste
 		}
 	}
 	return t, tx.Commit()
+}
+
+// InsertTransfer stores a transfer exactly as given, timestamps and status
+// included, without the checks RequestListing and Advance make. It is only
+// for loading demo activity.
+func (s *Store) InsertTransfer(ctx context.Context, t *domain.Transfer) error {
+	if t.ID == "" {
+		t.ID = NewID()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO transfers (`+transferCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.ListingID, t.ReceiverID, t.ReceiverName, t.ReceiverRole, t.IntendedUse, t.Status, t.ConfirmedKg,
+		t.ConfirmedPieces, t.Outcome, t.OutcomeNote, ts(t.CreatedAt), ts(t.UpdatedAt))
+	return err
 }

@@ -9,16 +9,17 @@ import (
 )
 
 // demoAccounts are the two shared accounts judges can use to try both sides
-// of a hand-over without signing up. They start empty: nothing is listed
-// for them.
+// of a hand-over without signing up. They come with demo activity (see
+// demoseed.go) so there is something to look at and act on straight away.
 var demoAccounts = map[string]domain.User{
 	"giver":  {Name: "Demo giver (school)", Email: "demo-giver@resourcelocate.example", Role: domain.RoleBusiness, Area: "Chilenje"},
 	"seeker": {Name: "Demo seeker (maker)", Email: "demo-seeker@resourcelocate.example", Role: domain.RoleIndividual, Area: "Kabwata"},
 }
 
-// EnableDemoLogins creates the demo accounts if needed and turns on
-// one-click login for them. Their password is random and never shown, so
-// the only way in is the demo login button.
+// EnableDemoLogins creates the demo accounts if needed, fills the exchange
+// with demo activity the first time, and turns on one-click login for them.
+// Their password is random and never shown, so the only way in is the demo
+// login button.
 func (s *Server) EnableDemoLogins(ctx context.Context) error {
 	s.demo = map[string]domain.User{}
 	for key, u := range demoAccounts {
@@ -35,7 +36,7 @@ func (s *Server) EnableDemoLogins(ctx context.Context) error {
 		}
 		s.demo[key] = u
 	}
-	return nil
+	return s.seedDemo(ctx)
 }
 
 // demoLogin signs in as one of the demo accounts. It answers 404 unless

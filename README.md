@@ -123,7 +123,7 @@ On GitHub, `.github/dependabot.yml` has Dependabot open a pull request each week
 | `PORT` | `8080` | HTTP port |
 | `DB_PATH` | `resource.db` | SQLite file |
 | `TRUST_PROXY` | unset | `1` when running behind a proxy that sets `X-Forwarded-For` (Render, Fly.io), so rate limits apply per visitor instead of to the proxy. Leave unset otherwise, since anyone can send that header. |
-| `DEMO_LOGINS` | unset | `1` adds "Demo giver" and "Demo seeker" buttons on the login page, so judges can try both sides of a hand-over without signing up. The two accounts start empty and are shared by everyone who uses them. |
+| `DEMO_LOGINS` | unset | `1` adds "Demo giver" and "Demo seeker" buttons on the login page, so judges can try both sides of a hand-over without signing up. It also fills an empty database with a few weeks of made-up activity around the two accounts (fictional people, listings, saved needs and hand-overs at every stage; see `internal/api/demoseed.go`), so there is something to look at and act on. The accounts are shared by everyone who uses them; changes stay until the database is reset. With `DEMO_LOGINS` unset there is no sample data. |
 
 ## Rate limits
 
@@ -186,10 +186,13 @@ Signed in:
 | `POST /api/me/password` | `{"current": "...", "new": "..."}`: change password, logging out other devices |
 | `GET /api/dashboard` | Your listings, needs with matches, hand-overs, and what you've given and claimed |
 | `POST /api/listings` | Publish a listing |
+| `PUT /api/listings/{id}` | Edit one of your open listings |
+| `DELETE /api/listings/{id}/photos/{n}` | Remove a photo from one of your listings (later photos move down one) |
 | `POST /api/listings/{id}/withdraw` | Take down one of your open listings |
 | `POST /api/listings/{id}/photos` | Add a reference photo (raw JPEG, PNG or WebP body, up to 2 MB, at most 4 per listing) |
 | `GET /api/matches?material=&kg=&pieces=&area=` | Ranked open listings from other people |
 | `GET /api/needs`, `POST /api/needs` | Your saved needs (with live matches), save a need |
+| `PUT /api/needs/{id}` | Edit one of your saved needs |
 | `POST /api/needs/{id}/close` | Remove a need |
 | `GET /api/transfers` | Your hand-overs, as giver or receiver |
 | `POST /api/transfers` | Request a listing |

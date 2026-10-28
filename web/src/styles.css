@@ -427,6 +427,7 @@ a.brand { color: inherit; text-decoration: none; }
 .status-chip.status-open { background: var(--good-soft); color: var(--good); }
 .status-chip.status-reserved { background: var(--info-soft); color: var(--info); }
 .need-card { padding-bottom: 8px; }
+.need-edit { padding: 10px 0 4px; gap: 10px; }
 .need-matches { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .match-row {
   width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center;

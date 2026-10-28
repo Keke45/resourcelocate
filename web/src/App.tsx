@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, setSignedOutHandler } from "./api";
 import { MetaContext, UserContext, roleLabels } from "./meta";
-import type { Meta, User } from "./types";
+import type { Listing, Meta, User } from "./types";
 import Landing from "./views/Landing";
 import AuthView from "./views/AuthView";
 import DashboardView from "./views/DashboardView";
@@ -89,6 +89,8 @@ export default function App() {
   const [toast, setToast] = useState("");
   // Bumped after any write so every view refetches what it shows.
   const [version, setVersion] = useState(0);
+  // The listing open in the Give form for editing, if any.
+  const [editing, setEditing] = useState<Listing | null>(null);
 
   useEffect(() => {
     api.meta().then(setMeta, (e: Error) => setLoadError(e.message));
@@ -127,6 +129,7 @@ export default function App() {
   const go = useCallback((p: Page) => {
     setPage(p);
     setShared(null);
+    setEditing(null);
     history.pushState(null, "", "/#" + p);
     window.scrollTo({ top: 0 });
   }, []);
@@ -187,9 +190,14 @@ export default function App() {
       )}
       {!shared && user && (
         <UserContext.Provider value={user}>
-          {shown === "dashboard" && <DashboardView version={version} onChanged={changed} go={go} />}
+          {shown === "dashboard" && (
+            <DashboardView version={version} onChanged={changed} go={go}
+              onEdit={(l) => { go("give"); setEditing(l); }} />
+          )}
           {shown === "find" && <FindView version={version} onChanged={changed} />}
-          {shown === "give" && <ListView onChanged={changed} />}
+          {shown === "give" && (
+            <ListView key={editing?.id ?? "new"} editing={editing} onChanged={changed} onCancel={() => go("dashboard")} />
+          )}
           {shown === "handovers" && <ActivityView version={version} onChanged={changed} />}
           {shown === "settings" && <SettingsView onUserChanged={setUser} onChanged={(m) => setToast(m)} />}
         </UserContext.Provider>
